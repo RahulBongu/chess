@@ -50,6 +50,7 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
   let gray: Mat | null = null;
   let blurred: Mat | null = null;
   let edges: Mat | null = null;
+  let edgesLow: Mat | null = null;
   let dilated: Mat | null = null;
   let resized: Mat | null = null;
   const contours = PointVectorOfVectors.create();
@@ -63,13 +64,19 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
     gray = Mat.create(targetHeight, targetWidth, DataTypes.CV_8UC1);
     blurred = Mat.create(targetHeight, targetWidth, DataTypes.CV_8UC1);
     edges = Mat.create(targetHeight, targetWidth, DataTypes.CV_8UC1);
+    edgesLow = Mat.create(targetHeight, targetWidth, DataTypes.CV_8UC1);
     dilated = Mat.create(targetHeight, targetWidth, DataTypes.CV_8UC1);
     resized = Mat.create(targetHeight, targetWidth, DataTypes.CV_8UC3);
 
     OpenCV.resize(src, resized, Size.create(targetWidth, targetHeight), 0, 0, InterpolationFlags.INTER_AREA);
     OpenCV.cvtColor(resized, gray, ColorConversionCodes.COLOR_BGR2GRAY);
     OpenCV.GaussianBlur(gray, blurred, Size.create(5, 5), 0);
+    // Use a lower threshold pair as well as the original pair. A monitor or
+    // table edge is usually strong, but a chessboard drawn on a screen can have
+    // weaker boundaries after blur and JPEG compression.
+    OpenCV.Canny(blurred, edgesLow, 30, 90);
     OpenCV.Canny(blurred, edges, 60, 180);
+    OpenCV.bitwise_or(edgesLow, edges, edges);
 
     const kernel = OpenCV.getStructuringElement(MorphShapes.MORPH_RECT, Size.create(3, 3));
     OpenCV.dilate(edges, dilated, kernel, Point.create(-1, -1), 1, BorderTypes.BORDER_CONSTANT, Scalar.create(1));
@@ -83,6 +90,7 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
       data: processingBuffer.buffer,
     };
 
+    const seenCandidates = new Set<string>();
     const candidates: {
       corners: { x: number; y: number }[];
       boundaryScore: number;
@@ -102,20 +110,63 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
 
       const epsilon = 0.02 * perimeter;
       const approx = PointVector.create();
+      let processingPoints: { x: number; y: number }[] | null = null;
       try {
         OpenCV.approxPolyDP(contour, approx, epsilon, true);
-        if (approx.length !== 4) {
+        if (approx.length === 4) {
+          processingPoints = approx.getAll().map((point) => ({
+            x: point.x,
+            y: point.y,
+          }));
+        } else if (contour.length >= 4) {
+          // A board can be present as a contour whose outline is not simplified
+          // to exactly four points. Its minimum-area rectangle is a plausible
+          // quadrilateral candidate and is scored by the same pattern evidence.
+          const pointCount = contour.length;
+          const contourData: number[] = [];
+          for (const point of contour.getAll()) {
+            contourData.push(point.x, point.y);
+          }
+          const contourMat = Mat.create(pointCount, 1, DataTypes.CV_32FC2, contourData);
+          try {
+            const rect = OpenCV.minAreaRect(contourMat);
+            if (rect.width > 1 && rect.height > 1) {
+              const angle = (rect.angle * Math.PI) / 180;
+              const cosine = Math.cos(angle);
+              const sine = Math.sin(angle);
+              const halfWidth = rect.width / 2;
+              const halfHeight = rect.height / 2;
+              processingPoints = [
+                [-halfWidth, -halfHeight],
+                [halfWidth, -halfHeight],
+                [halfWidth, halfHeight],
+                [-halfWidth, halfHeight],
+              ].map(([localX, localY]) => ({
+                x: rect.x + localX * cosine - localY * sine,
+                y: rect.y + localX * sine + localY * cosine,
+              }));
+            }
+          } finally {
+            contourMat.release();
+          }
+        }
+
+        if (!processingPoints) {
           continue;
         }
 
-        const processingPoints = approx.getAll().map((point) => ({
-          x: point.x,
-          y: point.y,
-        }));
         const orderedProcessing = reorderCorners(processingPoints);
         if (!isConvexQuadrilateral(orderedProcessing)) {
           continue;
         }
+
+        const candidateKey = orderedProcessing
+          .map((point) => `${Math.round(point.x)},${Math.round(point.y)}`)
+          .join('|');
+        if (seenCandidates.has(candidateKey)) {
+          continue;
+        }
+        seenCandidates.add(candidateKey);
 
         const points = orderedProcessing.map((point) => ({
           x: point.x / scale,
@@ -238,6 +289,7 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
     gray?.release();
     blurred?.release();
     edges?.release();
+    edgesLow?.release();
     dilated?.release();
     resized?.release();
     contours.release?.();

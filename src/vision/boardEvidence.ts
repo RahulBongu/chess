@@ -10,7 +10,9 @@ import type { DetectedCorner } from './types';
  * - uniform, low-contrast, striped, partial, and non-board rectangles must fail.
  */
 export const PATTERN_GRID_SIZE = 8;
-export const PATTERN_SAMPLING_SCALES = [1, 0.97, 0.94, 0.9, 0.86, 0.82] as const;
+export const PATTERN_SAMPLING_SCALES = Array.from({ length: 21 }, (_, index) =>
+  Number((1 - index * 0.01).toFixed(2)),
+);
 export const PATTERN_CELL_INSET = 0.18;
 export const PATTERN_CORNER_SPREAD = 0.02;
 export const PATTERN_CORNER_SAMPLES = 3;

@@ -4,7 +4,7 @@ Android-first mobile app for analyzing and navigating a physical chess game.
 
 ## Current milestone
 
-Milestone 3.5: real-world board detection. The app includes a playable local chessboard, user-initiated camera calibration, and local OpenCV board detection that checks both the outer boundary and an alternating 8 × 8 square pattern. Detection now handles boards whose detected outline includes a border or surrounding edge. Stockfish analysis, piece recognition, voice instructions, and backend services are not implemented.
+Milestone 3.6: inner-board detection. The app includes a playable local chessboard, user-initiated camera calibration, and local OpenCV board detection that checks both the outer boundary and an alternating 8 × 8 square pattern. Detection now handles boards whose detected outline includes a border or surrounding edge and searches finer inward sampling scales plus minimum-area-rectangle candidates. Stockfish analysis, piece recognition, voice instructions, and backend services are not implemented.
 
 ## Technology stack
 
@@ -108,6 +108,13 @@ npx expo-doctor
 - `src/types/` — ambient type declarations
 - `src/vision/` — OpenCV board detection, boundary and 8 × 8 pattern evidence, scoring, and coordinate normalization
 - `tests/` — focused chess, calibration, camera-availability, and vision tests
+
+## Milestone 3.6 additions
+
+- Added finer inward sampling scales from 1.00 to 0.80 so small symmetric borders can align with the 8 × 8 grid.
+- Added minimum-area-rectangle candidates for contours that are not simplified to exactly four points.
+- Added a second Canny threshold pair and unioned the edge images before dilation.
+- Retained diagnostics for candidate corners, sampling scale, scores, and rejection reasons.
 
 ## Milestone 3.5 additions
 
