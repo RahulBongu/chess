@@ -1,10 +1,11 @@
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { CameraView, useCameraPermissions, type CameraMountError } from 'expo-camera';
 import { File } from 'expo-file-system';
 import { Linking } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useRef, useEffect, useState } from 'react';
 import {
   Image,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,6 +14,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
+import { resolveCameraAvailability } from '@/camera/availability';
 import { detectBoardFromBase64 } from '@/vision/detectBoard';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -54,9 +56,12 @@ export default function CameraSetupScreen() {
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameraKey, setCameraKey] = useState(0);
+  const [isScreenFocused, setIsScreenFocused] = useState(false);
   const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
   const [points, setPoints] = useState<NormalizedPoint[]>([]);
-  const [statusMessage, setStatusMessage] = useState('Enable the camera to begin calibration.');
+  const [statusMessage, setStatusMessage] = useState(
+    'Position the whole board in view, then tap Auto-detect board or its four outer corners.',
+  );
   const [confirmedPoints, setConfirmedPoints] = useState<NormalizedPoint[] | null>(null);
 
   const [isDetecting, setIsDetecting] = useState(false);
@@ -78,7 +83,17 @@ export default function CameraSetupScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      setIsScreenFocused(true);
+
       return () => {
+        // Expo Camera recommends unmounting the preview whenever its screen is
+        // not focused. On Android, mounting a preview off-screen leaves CameraX
+        // without a surface, so the preview never becomes ready when the tab is
+        // opened later. Unmounting also releases the camera while on other tabs.
+        setIsScreenFocused(false);
+        setCameraReady(false);
+        setCameraError(null);
+
         if (!capturedImageUriRef.current) {
           return;
         }
@@ -88,7 +103,6 @@ export default function CameraSetupScreen() {
         setSelectedCorner(null);
         setDetectionMessage(null);
         setDetectionConfidence(null);
-        setCameraReady(false);
         setStatusMessage(
           cleared
             ? 'Temporary capture cleared. Position the whole board in view, then tap Auto-detect board.'
@@ -99,11 +113,22 @@ export default function CameraSetupScreen() {
   );
 
   useEffect(() => {
-    if (permission?.granted) {
-      CameraView.isAvailableAsync()
-        .then(setCameraAvailable)
-        .catch(() => setCameraAvailable(false));
+    if (!permission?.granted) {
+      return;
     }
+
+    let active = true;
+    resolveCameraAvailability(Platform.OS, () => CameraView.isAvailableAsync()).then((available) => {
+      // `null` means the platform is native, where availability is reported by
+      // the CameraView mount callbacks rather than the web-only probe.
+      if (active && available !== null) {
+        setCameraAvailable(available);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
   }, [permission?.granted]);
 
   const handleEnableCamera = async () => {
@@ -191,6 +216,23 @@ export default function CameraSetupScreen() {
 
     setConfirmedPoints(points);
     setStatusMessage('Calibration accepted. The four corners are stored in memory for this session.');
+  };
+
+  const handleCameraReady = () => {
+    setCameraReady(true);
+    setCameraError(null);
+    setStatusMessage((current) =>
+      current === 'Camera preview could not start. Check camera access, then retry.'
+        ? 'Camera preview is ready. Position the whole board in view.'
+        : current,
+    );
+  };
+
+  const handleCameraMountError = (event: CameraMountError) => {
+    const detail = event.message?.trim();
+    setCameraReady(false);
+    setCameraError(detail ? `Camera preview failed: ${detail}` : 'Camera preview failed to start.');
+    setStatusMessage('Camera preview could not start. Check camera access, then retry.');
   };
 
   const handleRetryCamera = () => {
@@ -433,7 +475,7 @@ export default function CameraSetupScreen() {
       <SafeAreaView style={styles.safeArea}>
         <ScrollView contentContainerStyle={styles.content}>
           <Text style={styles.title}>Camera / Board Setup</Text>
-          <Text style={styles.warning}>No camera is available on this device or simulator.</Text>
+          <Text style={styles.warning}>No camera is available in this browser.</Text>
           <Pressable style={styles.secondaryButton} onPress={handleReturnToBoard} accessibilityRole="button">
             <Text style={styles.secondaryButtonText}>Return to chessboard</Text>
           </Pressable>
@@ -447,7 +489,7 @@ export default function CameraSetupScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>Camera / Board Setup</Text>
         <Text style={styles.body}>
-          Position the phone so the entire 8 × 8 board is visible. Auto-detect captures one still image and processes it locally on this device. You can also tap the outer corners in this order: top-left, top-right, bottom-right, bottom-left.
+          Position the phone so the entire 8 × 8 board is visible. Auto-detect captures one still image and processes it locally on this device. It checks the rectangular boundary and the alternating-square pattern inside it. You can also tap the outer corners in this order: top-left, top-right, bottom-right, bottom-left.
         </Text>
 
         {capturedImage ? (
@@ -529,7 +571,9 @@ export default function CameraSetupScreen() {
             </View>
             {detectionMessage ? <Text style={styles.status}>{detectionMessage}</Text> : null}
             {detectionConfidence !== null ? (
-              <Text style={styles.status}>Confidence: {detectionConfidence.toFixed(2)}</Text>
+              <Text style={styles.status}>
+                Detection score: {detectionConfidence.toFixed(2)} (heuristic quality, not a probability)
+              </Text>
             ) : null}
             <Text style={styles.body}>
               Tap a numbered corner to select it, then tap the image to move it. Confirm when the quadrilateral is valid.
@@ -551,24 +595,28 @@ export default function CameraSetupScreen() {
           <View
             style={[styles.previewContainer, { width: previewWidth, height: previewHeight }]}
             onLayout={handlePreviewLayout}>
-            <CameraView
-              ref={cameraRef}
-              key={cameraKey}
-              style={StyleSheet.absoluteFill}
-              facing="back"
-              onCameraReady={() => setCameraReady(true)}
-              onMountError={(event) => setCameraError(event.message)}
-            />
+            {isScreenFocused ? (
+              <CameraView
+                ref={cameraRef}
+                key={cameraKey}
+                style={StyleSheet.absoluteFill}
+                facing="back"
+                onCameraReady={handleCameraReady}
+                onMountError={handleCameraMountError}
+              />
+            ) : null}
             <Pressable style={StyleSheet.absoluteFill} onPress={handlePreviewPress} accessibilityLabel="Calibration preview" />
             {renderOverlay()}
-            {!cameraReady && !cameraError ? (
+            {isScreenFocused && !cameraReady && !cameraError ? (
               <View style={styles.previewStatus}>
                 <Text style={styles.previewStatusText}>Starting camera...</Text>
               </View>
             ) : null}
             {cameraError ? (
               <View style={styles.previewStatus}>
-                <Text style={styles.previewStatusText}>{cameraError}</Text>
+                <Text style={styles.previewStatusText} numberOfLines={6}>
+                  {cameraError}
+                </Text>
               </View>
             ) : null}
           </View>

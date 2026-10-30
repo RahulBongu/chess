@@ -15,8 +15,11 @@ import {
   Size,
 } from 'react-native-fast-opencv';
 
+import { measureBoardPattern } from './boardEvidence';
+import type { GrayscaleImage, PatternEvidence } from './boardEvidence';
 import {
   MIN_DETECTION_CONFIDENCE,
+  combineDetectionConfidence,
   isConvexQuadrilateral,
   normalizePoints,
   reorderCorners,
@@ -70,8 +73,19 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
 
     OpenCV.findContours(dilated, contours, RetrievalModes.RETR_EXTERNAL, ContourApproximationModes.CHAIN_APPROX_SIMPLE);
 
-    const candidates: { corners: { x: number; y: number }[]; score: number }[] = [];
-    const imageArea = originalSize.width * originalSize.height;
+    const processingBuffer = blurred.toBuffer('uint8');
+    const grayscale: GrayscaleImage = {
+      width: processingBuffer.cols,
+      height: processingBuffer.rows,
+      data: processingBuffer.buffer,
+    };
+
+    const candidates: {
+      corners: { x: number; y: number }[];
+      boundaryScore: number;
+      pattern: PatternEvidence;
+      confidence: number;
+    }[] = [];
 
     for (let index = 0; index < contours.length; index += 1) {
       const contour = contours.get(index);
@@ -88,27 +102,34 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
           continue;
         }
 
-        const points = approx.getAll().map((point) => ({
+        const processingPoints = approx.getAll().map((point) => ({
+          x: point.x,
+          y: point.y,
+        }));
+        const orderedProcessing = reorderCorners(processingPoints);
+        if (!isConvexQuadrilateral(orderedProcessing)) {
+          continue;
+        }
+
+        const points = orderedProcessing.map((point) => ({
           x: point.x / scale,
           y: point.y / scale,
         }));
-
         const ordered = reorderCorners(points);
-        if (!isConvexQuadrilateral(ordered)) {
-          continue;
-        }
 
         const geometry = validateCandidateGeometry(ordered, originalSize);
         if (!geometry.valid) {
           continue;
         }
 
-        const score = scoreCandidate(ordered, originalSize);
-        if (score < MIN_DETECTION_CONFIDENCE * 0.5) {
+        const boundaryScore = scoreCandidate(ordered, originalSize);
+        if (boundaryScore < MIN_DETECTION_CONFIDENCE * 0.5) {
           continue;
         }
 
-        candidates.push({ corners: ordered, score });
+        const pattern = measureBoardPattern(grayscale, orderedProcessing);
+        const confidence = combineDetectionConfidence(boundaryScore, pattern);
+        candidates.push({ corners: ordered, boundaryScore, pattern, confidence });
       } finally {
         approx.release();
       }
@@ -121,18 +142,22 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
       };
     }
 
-    candidates.sort((a, b) => b.score - a.score);
+    candidates.sort(
+      (a, b) => b.confidence - a.confidence || b.boundaryScore - a.boundaryScore,
+    );
     const best = candidates[0];
 
-    if (best.score < MIN_DETECTION_CONFIDENCE) {
+    if (best.confidence < MIN_DETECTION_CONFIDENCE) {
       return {
         ...emptyResult(
           originalSize,
-          'Board not detected with enough confidence. Improve lighting and framing, then retry.',
+          best.pattern.valid
+            ? 'Board not detected with enough evidence. Improve lighting and framing, then retry.'
+            : 'A rectangular outline was found, but its interior does not look like an 8 × 8 chessboard. Improve lighting and keep the whole board visible, then retry.',
           candidates.length,
         ),
         processingSize,
-        confidence: best.score,
+        confidence: best.confidence,
       };
     }
 
@@ -142,7 +167,7 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
       imageSize: originalSize,
       processingSize,
       corners: normalized,
-      confidence: best.score,
+      confidence: best.confidence,
       candidateCount: candidates.length,
       message: 'Board candidate detected. Review and adjust the corners before confirming.',
     };

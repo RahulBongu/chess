@@ -1,5 +1,8 @@
+import type { PatternEvidence } from './boardEvidence';
 import type { DetectedCorner, VisionSize } from './types';
 
+// Minimum combined boundary x pattern quality. Candidates whose boundary
+// score is below half of this value are discarded before pattern sampling.
 export const MIN_DETECTION_CONFIDENCE = 0.32;
 export const MIN_CANDIDATE_AREA_RATIO = 0.08;
 export const MIN_QUADRILATERAL_AREA_RATIO = 0.05;
@@ -23,22 +26,32 @@ export function reorderCorners(points: DetectedCorner[]): DetectedCorner[] {
     return [...points];
   }
 
-  // These extrema identify the four displayed corners for an arbitrarily
-  // rotated convex quadrilateral.
-  const topLeft = points.reduce((best, point) =>
-    point.x + point.y < best.x + best.y ? point : best,
+  // Sorting by angle around the centroid produces a reliable clockwise order
+  // for any convex quadrilateral, including diamonds where extrema-based
+  // ordering can select the same corner twice. Start at the visually topmost
+  // then leftmost corner so axis-aligned boards keep the familiar order.
+  const centerX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+  const centerY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+  const ordered = [...points].sort(
+    (left, right) =>
+      Math.atan2(left.y - centerY, left.x - centerX) -
+      Math.atan2(right.y - centerY, right.x - centerX),
   );
-  const topRight = points.reduce((best, point) =>
-    point.x - point.y > best.x - best.y ? point : best,
-  );
-  const bottomRight = points.reduce((best, point) =>
-    point.x + point.y > best.x + best.y ? point : best,
-  );
-  const bottomLeft = points.reduce((best, point) =>
-    point.x - point.y < best.x - best.y ? point : best,
+  const startIndex = ordered.reduce(
+    (bestIndex, point, index) => {
+      const best = ordered[bestIndex];
+      if (point.x + point.y < best.x + best.y) {
+        return index;
+      }
+      if (point.x + point.y === best.x + best.y && point.y < best.y) {
+        return index;
+      }
+      return bestIndex;
+    },
+    0,
   );
 
-  return [topLeft, topRight, bottomRight, bottomLeft];
+  return [...ordered.slice(startIndex), ...ordered.slice(0, startIndex)];
 }
 
 export function isConvexQuadrilateral(points: DetectedCorner[]): boolean {
@@ -168,18 +181,40 @@ export function scoreCandidate(points: DetectedCorner[], size: VisionSize): numb
   const imageArea = size.width * size.height;
   const areaRatio = imageArea > 0 ? area / imageArea : 0;
 
-  const xs = ordered.map((point) => point.x);
-  const ys = ordered.map((point) => point.y);
-  const boundingWidth = Math.max(...xs) - Math.min(...xs);
-  const boundingHeight = Math.max(...ys) - Math.min(...ys);
-  const boundingArea = boundingWidth * boundingHeight;
-  const rectangularity = boundingArea > 0 ? area / boundingArea : 0;
+  // Compare the area with the square of the average side length rather than
+  // an axis-aligned bounding box. The bounding box unfairly penalizes boards
+  // rotated away from the image axes; this measure is rotation-invariant.
+  const sideLengths = ordered.map((point, index) => {
+    const next = ordered[(index + 1) % ordered.length];
+    return Math.hypot(next.x - point.x, next.y - point.y);
+  });
+  const averageSideLength =
+    sideLengths.reduce((sum, length) => sum + length, 0) / sideLengths.length;
+  const sideArea = averageSideLength * averageSideLength;
+  const rectangularity = sideArea > 0 ? Math.min(1, area / sideArea) : 0;
 
   return Math.max(0, Math.min(1, areaRatio * 1.6 * rectangularity));
 }
 
 export function confidenceFromScore(score: number): number {
   return Math.max(0, Math.min(1, score));
+}
+
+/**
+ * Boundary quality is only half of the evidence. A large rectangle can score
+ * 1.0 as a boundary while containing no chessboard pattern. The reported
+ * detection score is therefore the product of boundary and pattern quality,
+ * and is zero when the interior is not a plausible 8 x 8 checkerboard.
+ */
+export function combineDetectionConfidence(
+  boundaryScore: number,
+  pattern: Pick<PatternEvidence, 'valid' | 'score'>,
+): number {
+  if (!pattern.valid) {
+    return 0;
+  }
+
+  return confidenceFromScore(boundaryScore) * confidenceFromScore(pattern.score);
 }
 
 export function normalizePoints(points: DetectedCorner[], size: VisionSize): DetectedCorner[] {
