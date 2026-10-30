@@ -16,7 +16,7 @@ import {
 
 import { resolveCameraAvailability } from '@/camera/availability';
 import { detectBoardFromBase64 } from '@/vision/detectBoard';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import type { CandidateDiagnostic } from '@/vision/types';import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   NormalizedPoint,
@@ -70,6 +70,7 @@ export default function CameraSetupScreen() {
   const [selectedCorner, setSelectedCorner] = useState<number | null>(null);
   const [detectionMessage, setDetectionMessage] = useState<string | null>(null);
   const [detectionConfidence, setDetectionConfidence] = useState<number | null>(null);
+  const [detectionDiagnostics, setDetectionDiagnostics] = useState<CandidateDiagnostic[]>([]);
 
   const previewWidth = Math.min(width - 24, 480);
   const previewHeight = Math.round(previewWidth * (4 / 3));
@@ -103,6 +104,7 @@ export default function CameraSetupScreen() {
         setSelectedCorner(null);
         setDetectionMessage(null);
         setDetectionConfidence(null);
+        setDetectionDiagnostics([]);
         setStatusMessage(
           cleared
             ? 'Temporary capture cleared. Position the whole board in view, then tap Auto-detect board.'
@@ -271,6 +273,7 @@ export default function CameraSetupScreen() {
       const result = await detectBoardFromBase64(photo.base64);
       setDetectionMessage(result.message);
       setDetectionConfidence(result.confidence);
+      setDetectionDiagnostics(result.diagnostics ?? []);
 
       if (result.success) {
         setDetectedCorners(result.corners);
@@ -294,6 +297,7 @@ export default function CameraSetupScreen() {
     setSelectedCorner(null);
     setDetectionMessage(null);
     setDetectionConfidence(null);
+    setDetectionDiagnostics([]);
     setCameraReady(false);
     setStatusMessage(
       cleared
@@ -575,6 +579,29 @@ export default function CameraSetupScreen() {
                 Detection score: {detectionConfidence.toFixed(2)} (heuristic quality, not a probability)
               </Text>
             ) : null}
+            {detectionDiagnostics.length > 0 ? (
+              <Text style={styles.body}>
+                {detectionDiagnostics.length} candidate{detectionDiagnostics.length === 1 ? '' : 's'} evaluated. Best: boundary{' '}
+                {detectionDiagnostics[0].boundaryScore.toFixed(2)}, pattern {detectionDiagnostics[0].pattern.score.toFixed(2)}, fit{' '}
+                {detectionDiagnostics[0].pattern.fit.toFixed(2)}, alternation{' '}
+                {detectionDiagnostics[0].pattern.alternation.toFixed(2)}, contrast{' '}
+                {detectionDiagnostics[0].pattern.contrast.toFixed(1)}, noise{' '}
+                {detectionDiagnostics[0].pattern.noise.toFixed(1)}, sampling scale{' '}
+                {detectionDiagnostics[0].samplingScale.toFixed(2)}, orientation{' '}
+                {detectionDiagnostics[0].pattern.orientation ?? 'n/a'}, reason:{' '}
+                {detectionDiagnostics[0].pattern.reason ?? 'accepted'}.
+              </Text>
+            ) : null}
+            {detectionDiagnostics.slice(0, 5).map((diagnostic, index) => (
+              <Text key={`diagnostic-${index}`} style={styles.body}>
+                #{index + 1}: corners{' '}
+                {diagnostic.corners
+                  .map((corner) => `(${corner.x.toFixed(0)}, ${corner.y.toFixed(0)})`)
+                  .join(' ')}; sampling scale {diagnostic.samplingScale.toFixed(2)}; boundary{' '}
+                {diagnostic.boundaryScore.toFixed(2)}; pattern {diagnostic.pattern.score.toFixed(2)}; reason:{' '}
+                {diagnostic.pattern.reason ?? 'accepted'}.
+              </Text>
+            ))}
             <Text style={styles.body}>
               Tap a numbered corner to select it, then tap the image to move it. Confirm when the quadrilateral is valid.
             </Text>

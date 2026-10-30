@@ -4,7 +4,7 @@ Android-first mobile app for analyzing and navigating a physical chess game.
 
 ## Current milestone
 
-Milestone 3.4: board-detector reliability. The app includes a playable local chessboard, user-initiated camera calibration, and local OpenCV board detection that checks both the outer boundary and an alternating 8 × 8 square pattern. Stockfish analysis, piece recognition, voice instructions, and backend services are not implemented.
+Milestone 3.5: real-world board detection. The app includes a playable local chessboard, user-initiated camera calibration, and local OpenCV board detection that checks both the outer boundary and an alternating 8 × 8 square pattern. Detection now handles boards whose detected outline includes a border or surrounding edge. Stockfish analysis, piece recognition, voice instructions, and backend services are not implemented.
 
 ## Technology stack
 
@@ -60,9 +60,9 @@ The normal debug workflow keeps Metro, INTERNET, and cleartext traffic enabled. 
 The detector runs in two stages on the locally captured still image:
 
 1. **Boundary evidence.** The image is resized to at most 720 pixels wide, converted to grayscale, blurred, and edge-detected. External four-point contours are simplified and must form a convex quadrilateral that spans enough of the image. Boundary quality combines image coverage with a rotation-tolerant rectangularity measure (quadrilateral area divided by the square of its average side length).
-2. **Pattern evidence.** The candidate is rectified through a homography and sampled as an 8 × 8 grid. Patches near each cell's corners are used so pieces standing in square centres do not hide the square colour. The detector measures how well the patch means fit two checkerboard parity orientations, how many adjacent cell pairs alternate in the expected direction, the average adjacent-cell contrast, and the variation inside each cell. Uniform, low-contrast, striped, incomplete, and non-board rectangles fail this stage.
+2. **Pattern evidence.** The candidate is rectified through a homography and sampled as an 8 × 8 grid. Patches near each cell's corners are used so pieces standing in square centres do not hide the square colour. Because a detected outline often includes a board border or a surrounding table edge, the scorer also evaluates several inward sampling regions (scales from 1.00 to 0.82) and keeps the strongest board evidence. The outer corners are still returned for calibration. The detector measures how well the patch means fit two checkerboard parity orientations, how many adjacent cell pairs alternate in the expected direction, the average adjacent-cell contrast, and the variation inside each cell. Uniform, low-contrast, striped, incomplete, and non-board rectangles fail this stage.
 
-A candidate is accepted only when the geometry is valid, the interior passes the pattern-evidence gates, and the combined score reaches `MIN_DETECTION_CONFIDENCE` (`0.32`). Pattern gates require checkerboard parity to explain at least 55% of cell-mean variance, at least 80% of adjacent cell pairs to alternate in the expected direction, at least 8 gray levels of mean adjacent-square contrast, and a combined pattern quality of at least `0.45`. These thresholds are exercised by the deterministic fixtures rather than chosen only by inspection. The reported **detection score** is:
+A candidate is accepted only when the geometry is valid, the interior passes the pattern-evidence gates, and the combined score reaches `MIN_DETECTION_CONFIDENCE` (`0.32`). Pattern gates require checkerboard parity to explain at least 55% of cell-mean variance, at least 80% of adjacent cell pairs to alternate in the expected direction, at least 8 gray levels of mean adjacent-square contrast, and a combined pattern quality of at least `0.45`. These thresholds are exercised by the deterministic fixtures rather than chosen only by inspection. The candidate list is collected with `RETR_LIST`, so a board contained in a larger rectangle can still be evaluated. The app displays per-candidate diagnostics (corners, sampling scale, boundary score, pattern score, fit, alternation, contrast, noise, and rejection reason) for local testing. The reported **detection score** is:
 
 ```text
 detection score = boundary quality × pattern quality
@@ -108,6 +108,15 @@ npx expo-doctor
 - `src/types/` — ambient type declarations
 - `src/vision/` — OpenCV board detection, boundary and 8 × 8 pattern evidence, scoring, and coordinate normalization
 - `tests/` — focused chess, calibration, camera-availability, and vision tests
+
+## Milestone 3.5 additions
+
+- Diagnosed the real-device failure with a Python/OpenCV emulation of the native pipeline: the detected outer quadrilateral included a board border, so the 8 × 8 sampler was shifted by roughly 10% and produced fit 0.051, noise 51.4, and combined confidence 0.
+- Shrinking the sampling region to 90% of the detected quadrilateral recovered fit 0.887, alternation 1.0, contrast 106.8, noise 3.6, and combined confidence 0.887.
+- Detection now evaluates sampling scales from 1.00 to 0.82 for every candidate and keeps the strongest board evidence while returning the outer corners for calibration.
+- Contour collection now uses `RETR_LIST`, allowing a board contained in a larger rectangle to be evaluated.
+- Added per-candidate diagnostics to `BoardDetectionResult` and the camera setup screen.
+- Added regression tests for a bordered board, including the outer-corner failure and inset-sampling recovery.
 
 ## Milestone 3.4 additions
 

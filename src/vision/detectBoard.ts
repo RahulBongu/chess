@@ -15,20 +15,22 @@ import {
   Size,
 } from 'react-native-fast-opencv';
 
-import { measureBoardPattern } from './boardEvidence';
+import { PATTERN_SAMPLING_SCALES, measureBoardPattern } from './boardEvidence';
 import type { GrayscaleImage, PatternEvidence } from './boardEvidence';
 import {
   MIN_DETECTION_CONFIDENCE,
   combineDetectionConfidence,
+  insetCorners,
   isConvexQuadrilateral,
   normalizePoints,
   reorderCorners,
   scoreCandidate,
   validateCandidateGeometry,
 } from './boardDetection';
+import type { CandidateDiagnostic } from './types';
 import type { BoardDetectionResult, VisionSize } from './types';
 
-function emptyResult(size: VisionSize, message: string, candidateCount = 0): BoardDetectionResult {
+function emptyResult(size: VisionSize, message: string, candidateCount = 0, diagnostics: CandidateDiagnostic[] = []): BoardDetectionResult {
   return {
     success: false,
     imageSize: size,
@@ -37,6 +39,7 @@ function emptyResult(size: VisionSize, message: string, candidateCount = 0): Boa
     confidence: 0,
     candidateCount,
     message,
+    diagnostics,
   };
 }
 
@@ -71,7 +74,7 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
     const kernel = OpenCV.getStructuringElement(MorphShapes.MORPH_RECT, Size.create(3, 3));
     OpenCV.dilate(edges, dilated, kernel, Point.create(-1, -1), 1, BorderTypes.BORDER_CONSTANT, Scalar.create(1));
 
-    OpenCV.findContours(dilated, contours, RetrievalModes.RETR_EXTERNAL, ContourApproximationModes.CHAIN_APPROX_SIMPLE);
+    OpenCV.findContours(dilated, contours, RetrievalModes.RETR_LIST, ContourApproximationModes.CHAIN_APPROX_SIMPLE);
 
     const processingBuffer = blurred.toBuffer('uint8');
     const grayscale: GrayscaleImage = {
@@ -85,7 +88,10 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
       boundaryScore: number;
       pattern: PatternEvidence;
       confidence: number;
+      samplingScale: number;
+      samplingCorners: { x: number; y: number }[];
     }[] = [];
+    const diagnostics: CandidateDiagnostic[] = [];
 
     for (let index = 0; index < contours.length; index += 1) {
       const contour = contours.get(index);
@@ -127,9 +133,55 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
           continue;
         }
 
-        const pattern = measureBoardPattern(grayscale, orderedProcessing);
-        const confidence = combineDetectionConfidence(boundaryScore, pattern);
-        candidates.push({ corners: ordered, boundaryScore, pattern, confidence });
+        // A detected outer quadrilateral often includes a board border or a
+        // surrounding table edge. Evaluate a few inward sampling regions and
+        // keep the strongest board evidence, while retaining the outer corners
+        // for calibration.
+        let bestSamplingScale = 1;
+        let bestSamplingCorners = orderedProcessing;
+        let bestPattern = measureBoardPattern(grayscale, orderedProcessing);
+        let bestConfidence = combineDetectionConfidence(boundaryScore, bestPattern);
+
+        for (const samplingScale of PATTERN_SAMPLING_SCALES) {
+          if (samplingScale === 1) {
+            continue;
+          }
+          const samplingProcessing = insetCorners(orderedProcessing, samplingScale);
+          const pattern = measureBoardPattern(grayscale, samplingProcessing);
+          const confidence = combineDetectionConfidence(boundaryScore, pattern);
+          if (
+            confidence > bestConfidence ||
+            (confidence === bestConfidence && pattern.score > bestPattern.score)
+          ) {
+            bestConfidence = confidence;
+            bestPattern = pattern;
+            bestSamplingScale = samplingScale;
+            bestSamplingCorners = samplingProcessing;
+          }
+        }
+
+        const confidence = bestConfidence;
+        const samplingCorners = bestSamplingCorners.map((point) => ({
+          x: point.x / scale,
+          y: point.y / scale,
+        }));
+
+        candidates.push({
+          corners: ordered,
+          boundaryScore,
+          pattern: bestPattern,
+          confidence,
+          samplingScale: bestSamplingScale,
+          samplingCorners,
+        });
+        diagnostics.push({
+          corners: ordered,
+          samplingCorners,
+          samplingScale: bestSamplingScale,
+          boundaryScore,
+          pattern: bestPattern,
+          confidence,
+        });
       } finally {
         approx.release();
       }
@@ -137,12 +189,15 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
 
     if (candidates.length === 0) {
       return {
-        ...emptyResult(originalSize, 'Board not detected. Try a clearer, top-down view with the whole board visible.', 0),
+        ...emptyResult(originalSize, 'Board not detected. Try a clearer, top-down view with the whole board visible.', 0, diagnostics),
         processingSize,
       };
     }
 
     candidates.sort(
+      (a, b) => b.confidence - a.confidence || b.boundaryScore - a.boundaryScore,
+    );
+    diagnostics.sort(
       (a, b) => b.confidence - a.confidence || b.boundaryScore - a.boundaryScore,
     );
     const best = candidates[0];
@@ -155,6 +210,7 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
             ? 'Board not detected with enough evidence. Improve lighting and framing, then retry.'
             : 'A rectangular outline was found, but its interior does not look like an 8 × 8 chessboard. Improve lighting and keep the whole board visible, then retry.',
           candidates.length,
+          diagnostics,
         ),
         processingSize,
         confidence: best.confidence,
@@ -170,6 +226,7 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
       confidence: best.confidence,
       candidateCount: candidates.length,
       message: 'Board candidate detected. Review and adjust the corners before confirming.',
+      diagnostics,
     };
   } catch (error) {
     return {

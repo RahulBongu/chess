@@ -1,3 +1,5 @@
+import type { PatternEvidence } from './boardEvidence';
+
 export interface VisionSize {
   width: number;
   height: number;
@@ -15,6 +17,15 @@ export interface DetectionCandidate {
   confidence: number;
 }
 
+export interface CandidateDiagnostic {
+  corners: DetectedCorner[];
+  samplingCorners: DetectedCorner[];
+  samplingScale: number;
+  boundaryScore: number;
+  pattern: PatternEvidence;
+  confidence: number;
+}
+
 export interface BoardDetectionResult {
   success: boolean;
   imageSize: VisionSize;
@@ -23,4 +34,5 @@ export interface BoardDetectionResult {
   confidence: number;
   candidateCount: number;
   message: string;
+  diagnostics?: CandidateDiagnostic[];
 }

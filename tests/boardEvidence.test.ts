@@ -15,6 +15,7 @@ import type { GrayscaleImage, SquareHomography } from '../src/vision/boardEviden
 import {
   MIN_DETECTION_CONFIDENCE,
   combineDetectionConfidence,
+  insetCorners,
   reorderCorners,
   scoreCandidate,
 } from '../src/vision/boardDetection.ts';
@@ -547,6 +548,69 @@ test('a board with pieces on the back ranks is still accepted', () => {
   const evidence = evidenceFor(image, corners);
   assert.equal(evidence.valid, true, evidence.reason ?? 'accepted');
   assert.ok(confidenceFor(image, corners) > 0.8);
+});
+
+test('a board with an outer border is rejected at the outer corners but accepted through inset sampling', () => {
+  const corners = axisAlignedSquare(320, 320, 560);
+  const image = createSceneImage({
+    width: 640,
+    height: 640,
+    corners,
+    outside: 100,
+    noise: 2,
+    seed: 61,
+    valueAt: (u, v) => {
+      if (u < 0.05 || u > 0.95 || v < 0.05 || v > 0.95) {
+        return 110;
+      }
+      const innerU = (u - 0.05) / 0.9;
+      const innerV = (v - 0.05) / 0.9;
+      const row = Math.min(PATTERN_GRID_SIZE - 1, Math.floor(innerV * PATTERN_GRID_SIZE));
+      const column = Math.min(PATTERN_GRID_SIZE - 1, Math.floor(innerU * PATTERN_GRID_SIZE));
+      return (row + column) % 2 === 0 ? 225 : 45;
+    },
+  });
+
+  const ordered = reorderCorners(corners);
+  const outerEvidence = measureBoardPattern(image, ordered);
+  assert.equal(outerEvidence.valid, false, 'outer border candidate must reproduce the device failure');
+
+  const samplingCorners = insetCorners(ordered, 0.9);
+  const samplingEvidence = measureBoardPattern(image, samplingCorners);
+  assert.equal(samplingEvidence.valid, true, samplingEvidence.reason ?? 'accepted');
+  assert.ok(samplingEvidence.fit >= MIN_PATTERN_FIT);
+  assert.ok(samplingEvidence.alternation >= MIN_PATTERN_ALTERNATION);
+
+  const size: VisionSize = { width: image.width, height: image.height };
+  const confidence = combineDetectionConfidence(
+    scoreCandidate(ordered, size),
+    samplingEvidence,
+  );
+  assert.ok(confidence >= MIN_DETECTION_CONFIDENCE, `bordered board confidence ${confidence}`);
+});
+
+test('a bordered rectangle with a uniform centre is rejected at every sampling scale', () => {
+  const corners = axisAlignedSquare(320, 320, 560);
+  const image = createSceneImage({
+    width: 640,
+    height: 640,
+    corners,
+    outside: 100,
+    noise: 1,
+    seed: 62,
+    valueAt: (u, v) => {
+      if (u < 0.05 || u > 0.95 || v < 0.05 || v > 0.95) {
+        return 110;
+      }
+      return 128;
+    },
+  });
+
+  const ordered = reorderCorners(corners);
+  for (const scale of [1, 0.97, 0.94, 0.9, 0.86, 0.82]) {
+    const evidence = measureBoardPattern(image, insetCorners(ordered, scale));
+    assert.equal(evidence.valid, false, `scale ${scale}: ${evidence.reason ?? 'accepted'}`);
+  }
 });
 
 test('valid boards are accepted at different image scales', () => {

@@ -217,6 +217,21 @@ export function combineDetectionConfidence(
   return confidenceFromScore(boundaryScore) * confidenceFromScore(pattern.score);
 }
 
+export function insetCorners(corners: DetectedCorner[], scale: number): DetectedCorner[] {
+  if (corners.length !== 4 || !Number.isFinite(scale) || scale <= 0) {
+    return corners.map((point) => ({ ...point }));
+  }
+
+  const ordered = reorderCorners(corners);
+  const centerX = ordered.reduce((sum, point) => sum + point.x, 0) / ordered.length;
+  const centerY = ordered.reduce((sum, point) => sum + point.y, 0) / ordered.length;
+
+  return ordered.map((point) => ({
+    x: centerX + (point.x - centerX) * scale,
+    y: centerY + (point.y - centerY) * scale,
+  }));
+}
+
 export function normalizePoints(points: DetectedCorner[], size: VisionSize): DetectedCorner[] {
   if (size.width <= 0 || size.height <= 0) {
     return points.map((point) => ({ x: 0, y: 0 }));
