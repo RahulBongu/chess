@@ -29,6 +29,7 @@ import {
 } from './boardDetection';
 import type { CandidateDiagnostic } from './types';
 import type { BoardDetectionResult, VisionSize } from './types';
+import { validateGrayscaleFrame } from './grayscaleFrame';
 
 function emptyResult(size: VisionSize, message: string, candidateCount = 0, diagnostics: CandidateDiagnostic[] = []): BoardDetectionResult {
   return {
@@ -43,8 +44,7 @@ function emptyResult(size: VisionSize, message: string, candidateCount = 0, diag
   };
 }
 
-export async function detectBoardFromBase64(base64: string): Promise<BoardDetectionResult> {
-  const src = Mat.createFromBase64(base64);
+export async function detectBoardFromMat(src: Mat): Promise<BoardDetectionResult> {
   const originalSize: VisionSize = { width: src.cols, height: src.rows };
 
   let gray: Mat | null = null;
@@ -294,4 +294,28 @@ export async function detectBoardFromBase64(base64: string): Promise<BoardDetect
     resized?.release();
     contours.release?.();
   }
+}
+
+export async function detectBoardFromBase64(base64: string): Promise<BoardDetectionResult> {
+  // Still-photo path: base64 is an encoded JPEG/PNG image.
+  const src = Mat.createFromBase64(base64);
+  return detectBoardFromMat(src);
+}
+
+export async function detectBoardFromGrayscaleFrame(
+  base64: string,
+  width: number,
+  height: number,
+): Promise<BoardDetectionResult> {
+  const validation = validateGrayscaleFrame(base64, width, height);
+  if (!validation.ok) {
+    return emptyResult({ width: Math.max(1, width || 1), height: Math.max(1, height || 1) }, validation.message);
+  }
+
+  // Raw single-channel pixels must use the buffer API, not createFromBase64.
+  const gray = Mat.createFromBuffer('uint8', height, width, 1, validation.buffer);
+  const color = Mat.create(height, width, DataTypes.CV_8UC3);
+  OpenCV.cvtColor(gray, color, ColorConversionCodes.COLOR_GRAY2BGR);
+  gray.release();
+  return detectBoardFromMat(color);
 }
