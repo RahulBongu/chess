@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import React, { useRef, useState } from 'react';
 import {
+  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -75,6 +76,17 @@ export default function ChessScreen() {
     bump();
   };
 
+  const handleOpenLiveGame = () => {
+    try {
+      router.push('/live-game');
+    } catch (error) {
+      Alert.alert(
+        'Navigation failed',
+        error instanceof Error ? error.message : 'Unable to open Live Game.',
+      );
+    }
+  };
+
   const handlePromotion = (piece: PromotionPiece) => {
     if (!pendingPromotion) {
       return;
@@ -134,6 +146,16 @@ export default function ChessScreen() {
             style={[styles.button, styles.setupButton]}
             onPress={() => router.push('/camera-setup')}>
             <Text style={styles.buttonText}>Camera / Board Setup</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.button, styles.liveButton]}
+            onPress={handleOpenLiveGame}>
+            <Text style={styles.buttonText}>Live Game</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.button, styles.setupButton]}
+            onPress={() => router.push('/camera-lab')}>
+            <Text style={styles.buttonText}>Camera Lab</Text>
           </Pressable>
         </View>
 
@@ -249,6 +271,9 @@ const styles = StyleSheet.create({
   },
   setupButton: {
     backgroundColor: '#7B5EA7',
+  },
+  liveButton: {
+    backgroundColor: '#1B8A5A',
   },
   buttonText: {
     color: '#FFFFFF',
