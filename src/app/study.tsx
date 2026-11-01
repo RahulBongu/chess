@@ -149,8 +149,11 @@ export default function StudyScreen() {
                 : 'No legal move available.'}
             </Text>
             <Text style={styles.body}>
-              Evaluation: {analysis.score} centipawns ({analysis.perspective}) · depth {analysis.depth} · nodes {analysis.nodes}
+              Evaluation: {analysis.score} centipawns ({analysis.perspective}) · depth {analysis.depth} · positions evaluated {analysis.positionsEvaluated ?? analysis.nodes}
             </Text>
+            {analysis.pv.length > 1 ? (
+              <Text style={styles.body}>Predicted line: {analysis.pv.join(' ')}</Text>
+            ) : null}
             {analysis.terminal !== 'none' ? (
               <Text style={styles.body}>Terminal: {analysis.terminal}</Text>
             ) : null}
