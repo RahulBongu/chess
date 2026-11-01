@@ -59,9 +59,10 @@ export function getPixelLuminanceAndRgb(
 
   if (isRgbImage(image)) {
     const idx = (clampedY * image.width + clampedX) * 3;
-    const r = image.data[idx];
+    const isRgb = image.colorOrder === 'rgb';
+    const r = isRgb ? image.data[idx] : image.data[idx + 2];
     const g = image.data[idx + 1];
-    const b = image.data[idx + 2];
+    const b = isRgb ? image.data[idx + 2] : image.data[idx];
     const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
     return { lum, r, g, b };
   }

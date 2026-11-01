@@ -1,15 +1,15 @@
-# Milestone 5.1: Dataset-to-Runtime Alignment and CNN Training Audit
+# Milestone 5.1 & 5.1A: Dataset-to-Runtime Alignment, Color-Channel Verification, and CNN Training Audit
 
-**Milestone:** 5.1  
+**Milestones:** 5.1 & 5.1A  
 **Date:** 2026-11-01  
 **Target Repository:** `https://github.com/RahulBongu/chess.git`  
-**Starting Commit:** `898b306`  
+**Starting Commit:** `ca439b1`  
 **Production Model:** `defaultPieceClassifierModel` (`src/vision/pieceModelWeights.ts`, version `1.0.0-synthetic-staunton-v1`, UNCHANGED)  
 **Evaluated Candidates:**
 1. Synthetic HOG Baseline (`src/vision/pieceModelWeights.ts`)
 2. Phase 4.3E Linear HOG Adapted Candidate (`src/vision/experimentalPieceModelWeights.ts`)
 3. Milestone 5.0 Direct-Resize MicroChessCNN (`models/micro_chess_cnn_candidate.pt`)
-4. Milestone 5.1 Mobile-Matched MicroChessCNN (evaluated via `scripts/diagnose_preprocessing.py`)  
+4. Milestone 5.1A Mobile-Matched MicroChessCNN (standard ITU-R BT.601 BGR luminance)  
 **External Dataset:** Zenodo Record 6656212 (Campos & Berlanga, Universidad Carlos III de Madrid, CC BY 4.0)  
 
 ---
@@ -18,251 +18,217 @@
 
 In Milestone 5.0, a clean-room compact convolutional neural network (`MicroChessCNN`, 40,038 parameters, 160 KB raw binary) trained from scratch on Zenodo Sets 1–3 achieved only **20.40% Mean Leave-One-Physical-Set-Out (LOSO) Top-1** accuracy and **27.08% Top-1** on held-out Set 4.
 
-The objective of Milestone 5.1 is to conduct a rigorous, root-cause audit of the mobile runtime pipeline, dataset preprocessing, and training/evaluation harness before entertaining any architecture changes.
+Milestones 5.1 and 5.1A executed a thorough, root-cause audit of the mobile runtime pipeline, OpenCV buffer format, color channel ordering, dataset preprocessing, and training/evaluation harness:
 
-### Definitive Findings of the Audit
-1. **Gate 1 Discrepancy Resolved:**
-   * In `src/vision/classifyPiece.ts` (lines 71–76), the fallback `options.roi` calculates a centered $64\times 64$ sub-window (`x: 18..82, y: 18..82`) with unit step (`xStep = 1.0`).
-   * However, in the production pipeline `src/vision/recognizeBoard.ts` (line 156), `options.roi` is explicitly supplied as `square.bounds` ($100\times 100$ cell).
+### Key Audit Findings & Resolutions
+1. **Gate 1 Discrepancy Resolved (1.5625 Step vs. Center Crop):**
+   * In `src/vision/classifyPiece.ts` (lines 71–76), fallback logic exists for isolated $100\times 100$ images that crops the central $64\times 64$ sub-window (`x: 18..82, y: 18..82`, with `xStep = 1.0`).
+   * In the production pipeline (`src/vision/recognizeBoard.ts:156`), `options.roi` is explicitly supplied as `square.bounds` ($100\times 100$).
    * Consequently, `classifyPiece.ts` (lines 78–79) sets `xStep = yStep = 100 / 64 = 1.5625`.
-   * The runtime pipeline **resamples the full $100\times 100$ board square down to 64 samples at step 1.5625**, rather than cropping a central 64×64 sub-window.
-2. **Channel Layout & Luminance Formula:**
-   * OpenCV `warpPerspective` yields a 3-channel **BGR** Uint8Array (`CV_8UC3`, length 1,920,000).
-   * In `src/vision/classifySquare.ts` (lines 61–65), `r` reads byte 0 (Blue) and `b` reads byte 2 (Red), resulting in the effective luminance formula $\text{lum} = \text{round}(0.299 B + 0.587 G + 0.114 R)$ with integer rounding in $[0, 255]$.
-3. **Controlled Diagnosis of Input Transforms:**
-   * Comparing Direct Resize ($181\to 64$) vs. Mobile-Matched Preprocessing ($181\to 100\to \text{step } 1.5625$) under identical seed, architecture, and optimizer yields:
-     * Direct Resize: **20.40% Mean LOSO Top-1**, **27.08% on Set 4**
-     * Mobile-Matched: **20.14% Mean LOSO Top-1**, **27.34% on Set 4**
-   * Difference is $\pm 0.26$ percentage points (within random variation).
-   * Conversely, a center crop ($100\times 100\to [18:82, 18:82]$) causes catastrophic degradation (dropping linear accuracy from 40.62% to 19.66% and CNN from 27.08% to 21.88%) by truncating the tops and finials of Queens and Kings.
-4. **Root Cause of the 20% LOSO Ceiling:**
-   * The poor cross-set generalization is **not** caused by an input pipeline defect or preprocessing mismatch.
-   * With only 3 physical chess sets in training ($N=2,304$), a 40,000-parameter CNN trained from scratch overfits to set-specific wood grain, carving morphology, and illumination contrast (achieving 63.85% in-domain, but collapsing to 20.14% out-of-domain).
-   * Handcrafted HOG features with L2-Hys block normalization provide an inductive bias that suppresses surface texture and lighting variation, which is why linear HOG achieves 35.33% LOSO and 40.62% on Set 4 (+13.54 pp higher than the CNN).
-5. **Production Decision:**
-   * `MicroChessCNN` fails all production gates ($\text{Top-1 } 27.34\% \ll 88.0\%$).
+   * The live runtime pipeline **resamples the full $100\times 100$ board square down to 64 samples at step 1.5625**, retaining the entire piece footprint, rather than cropping a 64×64 center.
+2. **OpenCV Buffer Format & BGR Channel Correction (Milestone 5.1A):**
+   * Traced `Mat.createFromBase64` to `react-native-fast-opencv/cpp/ConvertImage.cpp:158`, which invokes `cv::imdecode(..., IMREAD_UNCHANGED)`. This decodes 3-channel photos into native **BGR** format.
+   * `rectifyMat` applies `OpenCV.warpPerspective` preserving BGR order, and `toBuffer('uint8')` outputs raw bytes: byte 0 is Blue ($B$), byte 1 is Green ($G$), and byte 2 is Red ($R$).
+   * In `src/vision/classifySquare.ts` (prior to M5.1A), byte 0 was assigned to `r` and byte 2 to `b`, inverting Red and Blue in the luminance formula ($\text{lum} = \text{round}(0.299 B + 0.587 G + 0.114 R)$).
+   * **Resolution:** Corrected `getPixelLuminanceAndRgb` to respect `colorOrder: 'bgr' | 'rgb'`: byte 2 is read as Red, byte 1 as Green, and byte 0 as Blue for standard OpenCV BGR buffers, restoring standard ITU-R BT.601 luminance ($Y = \text{round}(0.299 R + 0.587 G + 0.114 B)$).
+   * Validated on pure color test fixtures: Pure Red yields $Y=76$, Pure Green yields $Y=150$, Pure Blue yields $Y=29$.
+3. **Cross-Language Preprocessing Parity (Gate 2):**
+   * Implemented `scripts/verify_preprocessing_parity.py` and `tests/classifyPiece.test.ts` (Test 15) using a deterministic $100\times 100$ BGR fixture.
+   * Verified that TypeScript and Python HOG feature extraction and linear classifier inference match to **$5.96 \times 10^{-8}$ maximum difference** (IEEE 754 single-precision float limit).
+4. **Controlled Diagnosis of Input Transforms & Fold Breakdown (Gate 3 & 4):**
+   * **Mean LOSO Top-1:** Exactly identical at **20.40%** for both Direct Resize and Mobile-Matched with standard luminance ($0.00$ pp mean difference).
+   * **Individual Fold Breakdown:**
+     * Fold 1 (Set 1 held out): $24.87\% \to 24.87\%$ ($0.00$ pp)
+     * Fold 2 (Set 2 held out): $17.06\% \to 16.41\%$ ($-0.65$ pp)
+     * Fold 3 (Set 3 held out): $19.27\% \to 19.92\%$ ($+0.65$ pp)
+   * **Set 4 (Historical Holdout):** Direct Resize achieves **27.08%**; Mobile-Matched achieves **27.99%** ($+0.91$ pp, $+7$ samples).
+   * **Cross-Transform Robustness:** Evaluating the Direct-Resize trained model on Mobile-Matched data achieves **22.01%** ($-5.07$ pp distribution shift).
+   * **Center Crop Amputation:** Resizing to $100\times 100$ and center-cropping $[18:82, 18:82]$ truncates Queen/King crowns and piece bases, causing accuracy to collapse to $19.66\%$ on Linear and $21.88\%$ on CNN.
+5. **Root Cause of the 20% LOSO Ceiling:**
+   * The poor cross-set generalization is **not** caused by a preprocessing bug or channel-order artifact.
+   * A 40,000-parameter CNN trained from scratch on only 3 physical chess sets ($N=2,304$) suffers from a fundamental **sample diversity deficit**: it memorizes low-level wood grain and lathe patterns (scoring $64.28\%$ in-domain), but cannot learn 3D shape invariance across unobserved sets ($20.40\%$ LOSO).
+   * Handcrafted HOG features with L2-norm block normalization provide an inductive bias that suppresses texture and lighting, allowing linear HOG to reach $35.33\%$ LOSO Top-1.
+6. **Production Decision:**
+   * CNN fails all production gates ($\text{Top-1 } 27.99\% \ll 88.0\%$).
    * Production weights in `src/vision/pieceModelWeights.ts` remain **100% UNCHANGED**.
-   * Mandatory user confirmation (amber `?` badges) and the authoritative piece editor remain the active fail-safes.
+   * Mandatory user confirmation (amber `?` badges) and the manual piece editor remain the truthful, safe production fail-safes.
 
 ---
 
 ## 2. Gate 0: Preservation Verification
 
-* **Git HEAD:** `898b306` synchronized with `origin/main`.
+* **Git HEAD:** Verified synchronized with `origin/main`.
 * **Artifact Preservation:** All 33 files in `dist/` preserved untouched.
-* **Native Build Tree:** `modules/live-camera/android/build/` preserved untouched.
+* **Build Tree Preservation:** `modules/live-camera/android/build/` preserved untouched.
 * **No APK Builds:** Zero builds, packaging, or Android compilation commands executed.
-* **Storage Isolation:** Zenodo dataset and caches reside in `C:\Users\rahul\AppData\Local\Temp\opencode\zenodo_6656212\` outside Git.
+* **Storage Isolation:** Raw datasets, image caches, and binary checkpoints reside strictly in `C:\Users\rahul\AppData\Local\Temp\opencode\zenodo_6656212\` outside Git.
 
 ---
 
-## 3. Gate 1: Actual Mobile Sampling Transform Trace
+## 3. Gate 1: Actual OpenCV Buffer Format & Channel Order Verification
 
-We audited the concrete implementation across the source code:
+We audited the concrete C++ and TypeScript implementation from decode to pixel access:
 
 ```
-[Camera Sensor / Gallery]
+takePictureAsync() ──► Base64 JPEG
        │
-camera-setup.tsx:245 ─────────► cameraRef.current.takePictureAsync({ base64: true, quality: 0.8 })
+Mat.createFromBase64() [MatFactory.cpp:52 -> ConvertImage.cpp:158]
        │
-board-review.tsx:181 ─────────► src = Mat.createFromBase64(base64) [OpenCV CV_8UC3 BGR]
+cv::imdecode(data, IMREAD_UNCHANGED) ──► 3-Channel BGR cv::Mat (CV_8UC3)
        │
-rectify.ts:436–529 ──────────► rectifyMat(src, pixelCorners, 800)
-                                 ├── getPerspectiveTransform(srcVector, dstVector)
-                                 └── warpPerspective(src, dstMat, transformMat, Size(800,800), INTER_LINEAR, BORDER_CONSTANT)
+rectifyMat() [rectify.ts:521] ──► OpenCV.warpPerspective() ──► 800x800 BGR cv::Mat
        │
-board-review.tsx:195–199 ─────► buf = rectified.toBuffer('uint8')
-                                 └── imgData = { width: 800, height: 800, channels: 3, data: Uint8Array(1,920,000) }
+rectified.toBuffer('uint8') [MatDelegate.cpp:53] ──► Uint8Array(1,920,000) raw BGR bytes
        │
-recognizeBoard.ts:112 ────────► Stage 1: classifyRectifiedBoard(imgData, geometry)
-                                 ├── 4 Corner patches (12% to 22% insets) -> surface baseline
-                                 └── 50x50 central patch -> occupancy ('empty' vs 'occupied') and color ('white' vs 'black')
-       │
-recognizeBoard.ts:156 ────────► Stage 2 (for occupied squares):
-                                 classifyPieceFromPatch(rectifiedImage, {
-                                   roi: square.bounds,  // { x: c*100, y: r*100, width: 100, height: 100 }
-                                   model, color, scratchBuffer
-                                 })
-       │
-classifyPiece.ts:78–79 ───────► xStep = 100 / 64 = 1.5625, yStep = 100 / 64 = 1.5625
-                                 for py = 1..62, px = 1..62:
-                                   srcX = roi.x + px * 1.5625
-                                   srcY = roi.y + py * 1.5625
-       │
-classifySquare.ts:52–72 ──────► getPixelLuminanceAndRgb(image, srcX, srcY):
-                                 clampedX = Math.round(srcX)
-                                 clampedY = Math.round(srcY)
-                                 idx = (clampedY * 800 + clampedX) * 3
-                                 r = image.data[idx]      // Reads Blue byte from BGR Mat
-                                 g = image.data[idx + 1]  // Reads Green byte
-                                 b = image.data[idx + 2]  // Reads Red byte
-                                 lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b)
+imgData: { width: 800, height: 800, channels: 3, data: buf.buffer, colorOrder: 'bgr' }
 ```
 
-### 3.1 Trace Specifications
+### 3.1 Proven Byte Layout
+For any pixel $(x, y)$ in the canonical $800\times 800$ rectified buffer:
+$$\text{idx} = (y \times 800 + x) \times 3$$
+* $\text{data}[\text{idx}] = \text{Blue } (B)$
+* $\text{data}[\text{idx} + 1] = \text{Green } (G)$
+* $\text{data}[\text{idx} + 2] = \text{Red } (R)$
 
-| Dimension / Property | Concrete Implementation Value | Source Citation |
-| :--- | :--- | :--- |
-| **Canvas Size** | Strictly $800 \times 800$ pixels | `src/vision/rectify.ts:22` (`CANONICAL_BOARD_SIZE = 800`) |
-| **Square Cell Size** | Strictly $100 \times 100$ pixels | `src/vision/rectify.ts:23` (`CANONICAL_SQUARE_SIZE = 100`) |
-| **Rectification Transform** | `OpenCV.warpPerspective` with `INTER_LINEAR` | `src/vision/rectify.ts:519–529` |
-| **Buffer Layout & Channels** | 3-channel BGR (`CV_8UC3`), row-major interleaved bytes | `src/vision/rectify.ts:513`, `board-review.tsx:195` |
-| **Buffer Length** | $800 \times 800 \times 3 = 1,920,000$ bytes | `board-review.tsx:197–199` |
-| **Square ROI Coordinates** | `{ x: c * 100, y: r * 100, width: 100, height: 100 }` | `src/vision/rectify.ts:220–225` |
-| **Sampling Step** | `xStep = yStep = 100 / 64 = 1.5625` | `src/vision/classifyPiece.ts:78–79` |
-| **Pixel Coordinate Rounding**| Nearest neighbor: `Math.round(srcX)`, `Math.round(srcY)` | `src/vision/classifySquare.ts:57–58` |
-| **Luminance Formula** | $\text{round}(0.299 B + 0.587 G + 0.114 R)$ in $[0, 255]$ | `src/vision/classifySquare.ts:65` (BGR mapping) |
-| **Empty Square Filtering** | Pruned by Stage 1 surface contrast ($\ge 98\%$ accuracy) | `src/vision/recognizeBoard.ts:130–150` |
-| **Class Label Index Mapping**| `0: pawn, 1: knight, 2: bishop, 3: rook, 4: queen, 5: king` | `src/vision/classifyPiece.ts:35` |
+### 3.2 Correction in `src/vision/classifySquare.ts`
+Updated `getPixelLuminanceAndRgb` to support `colorOrder: 'bgr' | 'rgb'` (defaulting to `'bgr'`):
+```ts
+export function getPixelLuminanceAndRgb(
+  image: AnyImageData,
+  x: number,
+  y: number,
+): { lum: number; r: number; g: number; b: number } {
+  const clampedX = Math.max(0, Math.min(image.width - 1, Math.round(x)));
+  const clampedY = Math.max(0, Math.min(image.height - 1, Math.round(y)));
 
-### 3.2 Resolution of Discrepancy
-* **The Confusion:** Phase 4.3B and 4.3E documentation alternately referenced a "centered 64×64 piece window" and a "1.5625 sampling step".
-* **The Resolution:** In `src/vision/classifyPiece.ts` (lines 71–76), the code has a fallback `roi`:
-  ```ts
-  const roi = options?.roi ?? {
-    x: image.width >= 100 ? Math.round((image.width - HOG_PATCH_SIZE) / 2) : 0,
-    y: image.height >= 100 ? Math.round((image.height - HOG_PATCH_SIZE) / 2) : 0,
-    width: Math.min(image.width, HOG_PATCH_SIZE),
-    height: Math.min(image.height, HOG_PATCH_SIZE),
-  };
-  ```
-  If a standalone $100\times 100$ patch is passed without `options.roi`, it crops a central $64\times 64$ sub-window (`x: 18..82, y: 18..82`, `xStep = 1.0`).
-  However, in `src/vision/recognizeBoard.ts` (line 156), the board recognizer explicitly passes `roi: square.bounds` ($100\times 100$).
-  Therefore, the production code **always executes lines 78–79** (`xStep = yStep = 100 / 64 = 1.5625`), resampling the entire $100\times 100$ square cell down to 64 points.
+  if (isRgbImage(image)) {
+    const idx = (clampedY * image.width + clampedX) * 3;
+    const isRgb = image.colorOrder === 'rgb';
+    const r = isRgb ? image.data[idx] : image.data[idx + 2];
+    const g = image.data[idx + 1];
+    const b = isRgb ? image.data[idx + 2] : image.data[idx];
+    const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+    return { lum, r, g, b };
+  }
+
+  const idx = clampedY * image.width + clampedX;
+  const lum = image.data[idx];
+  return { lum, r: lum, g: lum, b: lum };
+}
+```
+
+### 3.3 Unit Test Verification on Pure Colors (tests/classifySquare.test.ts)
+
+| Pixel Test Case | Raw BGR Bytes in Buffer | Extracted $R, G, B$ | Expected Luminance ($Y$) | Actual Computed Luminance | Test Status |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Pure Red** | `[0, 0, 255]` | $R=255, G=0, B=0$ | $\text{round}(0.299 \times 255) = 76$ | $76$ | **PASS** |
+| **Pure Green** | `[0, 255, 0]` | $R=0, G=255, B=0$ | $\text{round}(0.587 \times 255) = 150$ | $150$ | **PASS** |
+| **Pure Blue** | `[255, 0, 0]` | $R=0, G=0, B=255$ | $\text{round}(0.114 \times 255) = 29$ | $29$ | **PASS** |
+| **Pure White** | `[255, 255, 255]` | $R=255, G=255, B=255$ | $\text{round}(1.000 \times 255) = 255$ | $255$ | **PASS** |
+| **Pure Black** | `[0, 0, 0]` | $R=0, G=0, B=0$ | $0$ | $0$ | **PASS** |
+| **Mid-Gray** | `[128, 128, 128]` | $R=128, G=128, B=128$ | $128$ | $128$ | **PASS** |
+
+*Regression Guard:* Verified that if Red and Blue are swapped, Red yields 29 and Blue yields 76. The test asserts `pRed.lum > pBlue.lum` (76 > 29), permanently blocking channel inversion regressions.
 
 ---
 
-## 4. Gate 2: Direct Comparison of Dataset and Mobile Inputs
+## 4. Gate 2: Preprocessing and Sampling Parity Verification
 
-Using the Zenodo Record 6656212 dataset ($N = 3,200$ images, $181\times 181$ PNG crops), we generated a 72-cell diagnostic contact sheet across 6 piece types, 2 piece colors, 4 physical chess sets, and multiple board positions (E4 center vs. A1/A8 corners).
+We created a deterministic $100\times 100$ BGR test fixture with:
+* Top-left: Pure Red (`[0, 0, 255]`)
+* Top-right: Pure Green (`[0, 255, 0]`)
+* Bottom-left: Pure Blue (`[255, 0, 0]`)
+* Bottom-right: Wood tone (`[140, 180, 210]`)
+* Center: Circular piece silhouette (`[30, 30, 30]`, radius 20)
 
-Diagnostic contact sheet saved to:
-`C:\Users\rahul\AppData\Local\Temp\opencode\zenodo_6656212\diagnostic_contact_sheet.png` (dimensions $600\times 1200$).
+### 4.1 Cross-Language Numerical Comparison
 
-### 4.1 Input Transform Differences
-
-We compared the three candidate transforms on identical Zenodo source images:
+Evaluated on the exact mobile sampling path ($100\times 100$ cell, step $1.5625$, nearest-neighbor integer coordinate rounding, 288-bin HOG extraction):
 
 ```
-Transform A (Direct Resize):
-  181 x 181 PNG ──► PIL Bilinear Resize(64, 64) ──► Grayscale [0.0, 1.0]
-
-Transform B (Mobile-Matched Preprocessing):
-  181 x 181 PNG ──► PIL Bilinear Resize(100, 100) ──► BGR Luminance (0.299B + 0.587G + 0.114R)
-                ──► Step 1.5625 Nearest-Neighbor Resampling(64, 64) ──► [0.0, 1.0]
-
-Transform C (Center Crop):
-  181 x 181 PNG ──► PIL Bilinear Resize(100, 100) ──► Crop [18:82, 18:82] (64 x 64) ──► [0.0, 1.0]
+Spot-Check Comparison (TypeScript vs. Python):
+  Index   0: TS = 0.000000, PY = 0.000000, diff = 0.00e+00
+  Index   8: TS = 0.592673, PY = 0.592673, diff = 5.96e-08
+  Index  32: TS = 0.288792, PY = 0.288792, diff = 2.98e-08
+  Index  64: TS = 0.320126, PY = 0.320127, diff = 2.98e-08
+  Index 128: TS = 0.120523, PY = 0.120523, diff = 0.00e+00
+  Index 200: TS = 0.130177, PY = 0.130177, diff = 0.00e+00
+  Index 256: TS = 0.365449, PY = 0.365449, diff = 2.98e-08
 ```
 
-### 4.2 Pixel Discrepancies and Truncation Analysis
+* **Maximum Absolute Feature Difference:** **$5.96 \times 10^{-8}$** (well within the $1.0 \times 10^{-4}$ tolerance).
+* **Mean Absolute Feature Difference:** **$2.72 \times 10^{-9}$**.
+* **End-to-End Inference Parity (Production Model):**
+  * TypeScript: `knight`, confidence = $0.977434$, margin = $0.955119$
+  * Python:     `knight`, confidence = $0.977434$, margin = $0.955119$
+* **End-to-End Inference Parity (Experimental Model):**
+  * TypeScript: `knight`, confidence = $0.726998$, margin = $0.516422$
+  * Python:     `knight`, confidence = $0.726998$, margin = $0.516421$
 
-1. **Transform A vs. Transform B (Direct Resize vs. Mobile-Matched):**
-   * Mean absolute difference across patches: **$0.0163$ ($4.16$ LSB out of 255)**.
-   * Maximum local difference at high-gradient edge boundaries: **$0.263$ ($67.1$ LSB)** due to nearest-neighbor sampling vs. bilinear filter smoothing.
-   * Visual piece scale, aspect ratio, and field of view are **identical**.
-2. **Transform C (Center Crop) Truncation Hazard:**
-   * Outer margin standard deviation ($0..18$ px and $82..100$ px of $100\times 100$ cell):
-     * Queen: top margin std = **$69.1$** (crowns and upper body lie in the top 18 pixels).
-     * King: top margin std = **$63.6$** (cross finials and upper head lie in the top 18 pixels).
-     * Knight: bottom margin std = **$65.7$** (piece pedestal lies in the bottom 18 pixels).
-   * **Consequence:** Cropping the central $64\times 64$ window from a $100\times 100$ cell physically amputates the diagnostic crowns of Queens and Kings.
-   * When evaluated with Center Crop, Linear model Top-1 crashes from **$40.62\%$ to $19.66\%$** ($-20.96$ pp), and CNN crashes from **$27.08\%$ to $21.88\%$** ($-5.20$ pp).
-
-### 4.3 Physical Set Illumination and Contrast
-
-| Physical Set | White Piece Mean Lum | Black Piece Mean Lum | Contrast Spread | Surface Texture / Carving |
-| :--- | :---: | :---: | :---: | :--- |
-| **Set 1 (Train)** | $139.3 \pm 25.2$ | $91.5 \pm 23.0$ | $47.8$ units | Light maple / dark walnut, sharp lathe grooves |
-| **Set 2 (Train)** | $140.0 \pm 25.1$ | $79.0 \pm 31.3$ | $61.0$ units | Blonde boxwood / ebonized black, polished varnish |
-| **Set 3 (Train)** | $104.6 \pm 20.5$ | $84.7 \pm 19.3$ | **$19.9$ units** | **Dark brown unvarnished wood; very low piece contrast** |
-| **Set 4 (Holdout)**| $147.1 \pm 26.4$ | $92.1 \pm 27.1$ | $55.0$ units | Classic cream Staunton / dark brown wood |
-
-*Notice:* Set 3 represents an extreme low-contrast outlier. A CNN trained on Sets 1 and 2 fails on Set 3 (19.27% Top-1), and a CNN trained on Sets 2 and 3 fails on Set 1 (24.87% Top-1).
-
-### 4.4 Data Partitioning and Label Verification
-* Verified all 2,304 training samples across Sets 1, 2, and 3: 100% matched their ground truth directory and set IDs.
-* Verified all 768 testing samples in Set 4: 100% matched their ground truth directory.
-* Verified mirror augmentation: horizontal flips are concatenated strictly within the training fold ($N = 3,072$ augmented per fold); the validation set remains strictly unaugmented ($N = 768$) with zero leakage across partitions.
+Parity is established at IEEE 754 float precision across both the feature extractor and inference engine.
 
 ---
 
-## 5. Gate 3: CNN Training and Evaluation Harness Audit
+## 5. Gate 3 & 4: Controlled Diagnosis and Experiment Consistency
 
-We audited `scripts/train_cnn_candidate.py` and its execution flow:
+We executed `scripts/diagnose_preprocessing.py` under strictly controlled conditions:
+* Architecture: `MicroChessCNN` (40,038 float32 parameters, 160 KB).
+* Optimizer: AdamW ($lr=10^{-3}$, weight_decay=$10^{-4}$, Cosine Annealing, 8 epochs).
+* Seeds: $42 + \text{test\_set}$ for LOSO folds; $42$ for candidate fit.
+* Historical Set 4: Evaluated as a historical holdout from Milestone 4.3D/5.0.
 
-1. **Fold Membership and Denominators:**
-   * Fold 1 (Set 1 held out): Train Sets 2 & 3 ($N = 1,536 \times 2 = 3,072$ augmented), Test Set 1 ($N = 768$).
-   * Fold 2 (Set 2 held out): Train Sets 1 & 3 ($N = 1,536 \times 2 = 3,072$ augmented), Test Set 2 ($N = 768$).
-   * Fold 3 (Set 3 held out): Train Sets 1 & 2 ($N = 1,536 \times 2 = 3,072$ augmented), Test Set 3 ($N = 768$).
-   * Candidate Fit: Train Sets 1, 2, & 3 ($N = 2,304 \times 2 = 4,608$ augmented), Test Set 4 ($N = 768$).
-2. **Absence of Data Leakage & Early Stopping:**
-   * Each fold's held-out set is strictly excluded from `X_tr` (`train_mask = (sets_train != test_set)`).
-   * No validation-guided early stopping was employed; all models trained for a fixed 8 epochs with Cosine Annealing. There was zero selection bias or hyperparameter snooping on the test folds.
-3. **Reproducibility Seeds:**
-   * Fixed seeds: `torch.manual_seed(42 + test_set)` for CV folds, `torch.manual_seed(42)` for candidate fit.
-4. **Historical Set 4 Disclosure:**
-   * Set 4 (the `valid/` directory of Zenodo 6656212) was inspected in Phase 4.3D and Milestone 5.0. It is **disclosed as a historical holdout benchmark**, not an uninspected blind set.
+### 5.1 Controlled Diagnosis Summary
 
----
-
-## 6. Gate 4: Minimal Controlled Diagnosis Results
-
-To test whether the 20.40% LOSO ceiling was an artifact of preprocessing mismatch, we executed `scripts/diagnose_preprocessing.py`, running an exact head-to-head comparison where **only the input preprocessing transform differed**:
-
-### 6.1 Controlled Comparison Table
-
-| Metric | Direct Resize (Milestone 5.0 Baseline) | Mobile-Matched Preprocessing (Milestone 5.1 Audit) | Baseline Deployed Model (Phase 4.3B Synthetic) | Adapted Linear Model (Phase 4.3E Candidate) |
+| Metric | Direct Resize (Milestone 5.0 Baseline) | Mobile-Matched (Milestone 5.1A Standard Lum) | Preprocessing Effect ($\Delta$) | M5.0 Model on Mobile-Matched Set 4 (Robustness Shift) |
 | :--- | :---: | :---: | :---: | :---: |
-| **Model Family** | MicroChessCNN (scratch) | MicroChessCNN (scratch) | 288-bin HOG + Linear | 288-bin HOG + Linear ($C=0.2$) |
-| **Training Input Transform** | Direct Resize ($181\to 64$) | Mobile-Matched ($100\to 64$) | Synthetic Silhouettes | Direct Resize ($181\to 64$) |
-| **Test Input Transform** | Direct Resize ($181\to 64$) | Mobile-Matched ($100\to 64$) | Mobile-Matched ($100\to 64$) | Mobile-Matched ($100\to 64$) |
-| **Mean LOSO Top-1** | **20.40%** | **20.14%** ($-0.26$ pp) | N/A | **35.33%** |
-| **Mean LOSO Top-2** | **37.11%** | **37.72%** ($+0.61$ pp) | N/A | **52.56%** |
-| Fold 1 (Set 1 held out) | 24.87% | 25.52% ($+0.65$ pp) | N/A | 38.50% |
-| Fold 2 (Set 2 held out) | 17.06% | 15.10% ($-1.96$ pp) | N/A | 32.90% |
-| Fold 3 (Set 3 held out) | 19.27% | 19.79% ($+0.52$ pp) | N/A | 34.50% |
-| **In-Domain Sets 1–3 Top-1** | **63.37%** (1460/2304) | **63.85%** (1471/2304) | N/A | 74.20% |
-| **Set 4 Top-1 (N=768)** | **27.08%** (208/768) | **27.34%** (210/768) ($+0.26$ pp) | **16.93%** (130/768) | **36.07%** (277/768) |
-| **Set 4 Top-2 (N=768)** | **51.17%** (393/768) | **50.65%** (389/768) ($-0.52$ pp) | **33.85%** (260/768) | **53.26%** (409/768) |
-| Pawn Recall | 30.47% (39/128) | 32.03% (41/128) | 0.00% (0/128) | 71.88% (92/128) |
-| Knight Recall | 45.31% (58/128) | 39.84% (51/128) | 92.97% (119/128) | 42.19% (54/128) |
-| Bishop Recall | 0.78% (1/128) | 0.00% (0/128) | 0.00% (0/128) | 52.34% (67/128) |
-| Rook Recall | 69.53% (89/128) | 67.97% (87/128) | 0.00% (0/128) | 30.47% (39/128) |
-| Queen Recall | 14.84% (19/128) | 18.75% (24/128) | 1.56% (2/128) | 4.69% (6/128) |
-| King Recall | 1.56% (2/128) | 5.47% (7/128) | 7.03% (9/128) | 15.62% (20/128) |
-| Abstention Rate ($\ge 80\%$) | 95.18% (731/768) | 93.62% (719/768) | 16.54% (127/768) | 88.28% (678/768) |
-| Coverage ($\le 20\%$) | 4.82% (37/768) | 6.38% (49/768) | 83.46% (641/768) | 11.72% (90/768) |
-| Accuracy on Accepted | 67.57% (25/37) | 67.35% (33/49) | 16.85% (108/641) | 68.89% (62/90) |
+| **Training Input** | Direct Resize ($181\to 64$) | Mobile-Matched ($100\to 64$) | Matched Pipeline | Direct Resize ($181\to 64$) |
+| **Evaluation Input** | Direct Resize ($181\to 64$) | Mobile-Matched ($100\to 64$) | Matched Pipeline | Mobile-Matched ($100\to 64$) |
+| **Mean LOSO Top-1** | **20.40%** | **20.40%** | **+0.00 pp** | N/A |
+| **Mean LOSO Top-2** | **37.11%** | **38.32%** | **+1.21 pp** | N/A |
+| Fold 1 (Set 1 held out) | 24.87% (191/768) | 24.87% (191/768) | +0.00 pp | N/A |
+| Fold 2 (Set 2 held out) | 17.06% (131/768) | 16.41% (126/768) | -0.65 pp | N/A |
+| Fold 3 (Set 3 held out) | 19.27% (148/768) | 19.92% (153/768) | +0.65 pp | N/A |
+| **In-Domain Sets 1–3 Top-1** | **63.37%** (1460/2304) | **64.28%** (1481/2304) | +0.91 pp | N/A |
+| **Set 4 Top-1 (Historical)** | **27.08%** (208/768) | **27.99%** (215/768) | **+0.91 pp** | **22.01%** (169/768, -5.07 pp shift) |
+| **Set 4 Top-2 (Historical)** | **51.17%** (393/768) | **50.78%** (390/768) | -0.39 pp | **47.53%** (365/768, -3.64 pp shift) |
+| Pawn Recall | 30.47% (39/128) | 35.16% (45/128) | +4.69 pp | 26.56% (34/128) |
+| Knight Recall | 45.31% (58/128) | 51.56% (66/128) | +6.25 pp | 32.81% (42/128) |
+| Bishop Recall | 0.78% (1/128) | 0.78% (1/128) | +0.00 pp | 0.78% (1/128) |
+| Rook Recall | 69.53% (89/128) | 68.75% (88/128) | -0.78 pp | 69.53% (89/128) |
+| Queen Recall | 14.84% (19/128) | 11.72% (15/128) | -3.12 pp | 0.78% (1/128) |
+| King Recall | 1.56% (2/128) | 0.00% (0/128) | -1.56 pp | 1.56% (2/128) |
+| Abstention Rate ($\ge 80\%$) | 95.18% (731/768) | 94.14% (723/768) | -1.04 pp | 96.09% (738/768) |
+| Coverage ($\le 20\%$) | 4.82% (37/768) | 5.86% (45/768) | +1.04 pp | 3.91% (30/768) |
+| Accuracy on Accepted | 67.57% (25/37) | 64.44% (29/45) | -3.13 pp | 66.67% (20/30) |
 
-### 6.2 Confusion Matrix (Mobile-Matched MicroChessCNN on Set 4)
+### 5.2 Confusion Matrix (Mobile-Matched MicroChessCNN on Set 4)
 ```
               Pred: pawn   knig   bish   rook   quee   king    Total
-True: pawn            41     42      0     37      8      0      128
-True: knight          23     51      3     32     17      2      128
-True: bishop           8     44      0     44     29      3      128
-True: rook             5     18      0     87     14      4      128
-True: queen            2     28      0     69     24      5      128
-True: king             3     14      2     73     29      7      128
+True: pawn            45     52      0     25      6      0      128
+True: knight          21     66      2     28      9      2      128
+True: bishop          11     48      1     47     19      2      128
+True: rook             7     20      0     88     11      2      128
+True: queen            4     31      0     74     15      4      128
+True: king             4     22      2     77     23      0      128
 --------------------------------------------------------------------
-Total Pred:           82    197      5    342    121     21      768
+Total Pred:           92    239      5    339     83     10      768
 ```
 
 ---
 
-## 7. Gate 5: Production Decision & Final Gate Table
+## 6. Gate 5: Production Acceptance Gates & Safeguards
 
 ```
 ========================================================================================================
-MILESTONE 5.1 PRODUCTION ACCEPTANCE GATES
+MILESTONE 5.1A PRODUCTION ACCEPTANCE GATES
 ========================================================================================================
 Requirement                         Gate Standard      Mobile-Matched MicroChessCNN   Gate Decision
 --------------------------------------------------------------------------------------------------------
-Top-1 Accuracy (Physical Set 4):    >= 88.0%           27.34%                         FAIL
-Top-2 Accuracy (Physical Set 4):    >= 96.0%           50.65%                         FAIL
-Queen Recall (Physical Set 4):      >= 90.0%           18.75%                         FAIL
-King Recall (Physical Set 4):       >= 90.0%           5.47%                          FAIL
-Abstention Rate (>= 80%, 90% tgt):  >= 80.0%           93.62%                         PASS (Target met)
+Top-1 Accuracy (Physical Set 4):    >= 88.0%           27.99%                         FAIL
+Top-2 Accuracy (Physical Set 4):    >= 96.0%           50.78%                         FAIL
+Queen Recall (Physical Set 4):      >= 90.0%           11.72%                         FAIL
+King Recall (Physical Set 4):       >= 90.0%           0.00%                          FAIL
+Abstention Rate (>= 80%, 90% tgt):  >= 80.0%           94.14%                         PASS (Target met)
 Zero-Silent-Error Policy:           100.0%             100.0%                         PASS
 Production Weight Isolation:        pieceModelWeights  UNCHANGED                      PASS
 Safety Guarantees Maintained:       Manual Review      Mandatory confirmation active  PASS
@@ -275,23 +241,17 @@ PRESERVE MANDATORY MANUAL CONFIRMATION IN BOARD REVIEW.
 
 ---
 
-## 8. Definitive Recommendation on Model Research
+## 7. Changed Files and Test Verification
 
-### 8.1 Is the Pipeline and Experiment Reliable?
-**YES.** Milestone 5.1 definitively proves:
-1. The mathematical trace from capture to Stage 2 piece sampling is consistent and fully accounted for.
-2. The runtime pipeline resamples the full $100\times 100$ cell down to 64 samples at step 1.5625 (retaining crowns, finials, and piece bases), and does **not** truncate via center crop.
-3. The evaluation harness is free of data leakage, snooping, or early-stopping bias.
-4. Input transform differences between Direct Resize and Mobile-Matched Resampling account for less than $\pm 0.3$ percentage points of variance.
-
-### 8.2 Why Scratch-Trained CNNs Cannot Solve Zenodo 6656212
-* **Sample Diversity Deficit:** Zenodo 6656212 provides only 3 training physical sets ($N=2,304$ raw crops).
-* **Failure Mode:** A 4-layer CNN has sufficient capacity to memorize in-domain set artifacts (reaching 63.85%), but lacks sufficient sample diversity to learn 3D shape invariance. Out-of-domain cross-set accuracy collapses to $20.14\%$.
-* **Why HOG Wins on Small Data:** Handcrafted HOG features explicitly discard uniform illumination and surface texture via gradient orientation binning and L2-Hys block normalization, allowing linear models to achieve 35.33% LOSO Top-1—nearly double the CNN.
-
-### 8.3 Strategic Recommendation for Future Milestones
-1. **Halt Scratch-Trained CNN Architecture Searches on Zenodo:** No compact CNN trained from scratch on 3 sets will bridge the gap from 27% to 88%. Further architecture hyperparameter sweeps (kernels, layers, activations) will not overcome the fundamental sample diversity deficit.
-2. **Path to Production 88% Real-Piece Recognition:**
-   * **Dataset Expansion:** Capture a dedicated, commercially licensed dataset of 20+ distinct physical tournament, club, and wooden chess sets across calibrated radial angles.
-   * **Self-Supervised Clean Pretraining:** Investigate self-supervised representation learning (e.g. DINO or SimCLR) trained from scratch on legally cleared imagery (public domain / CC0 chess tournament streams) to obtain shape-invariant representations without ImageNet licensing contamination.
-   * **Preserve Fail-Safe Architecture:** The application's existing Zero-Silent-Error architecture (amber `?` badges, board review manual placement, and FEN validation) remains the truthful, robust foundation.
+* **TypeScript Typecheck (`npx tsc --noEmit`):** 0 errors.
+* **Test Suite (`pnpm test`):** 155 / 155 tests passing across all 11 suites.
+* **Tracked Changes:**
+  - `src/vision/types.ts`: Added `colorOrder?: 'bgr' | 'rgb'` to `RgbImage` interface.
+  - `src/vision/classifySquare.ts`: Corrected `getPixelLuminanceAndRgb` to read byte 2 as Red and byte 0 as Blue for standard BGR buffers, restoring standard ITU-R BT.601 luminance.
+  - `src/app/board-review.tsx`: Explicitly tagged rectified buffer as `colorOrder: 'bgr'`.
+  - `tests/classifySquare.test.ts`: Added BGR synthetic fixtures and pure-color unit tests (Red 76, Green 150, Blue 29).
+  - `tests/classifyPiece.test.ts`: Added Test 15 verifying 100x100 BGR mobile sampling parity with Python reference.
+  - `scripts/verify_preprocessing_parity.py`: Dedicated Python parity verification script.
+  - `scripts/diagnose_preprocessing.py`: Updated with fold differences and cross-transform robustness evaluation.
+  - `docs/DATASET_TO_RUNTIME_ALIGNMENT_AUDIT.md`: Complete audit and benchmark documentation.
+* **Zero APK Rebuilds:** The previously verified release APK (`dist/ai-chess-navigator-1.0.0-arm64-milestone4-opencv-fix-20261101.apk`) remains the authoritative release artifact.

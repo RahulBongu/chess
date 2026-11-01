@@ -102,9 +102,14 @@ export interface RectifiedBoardGeometry {
 export interface RgbImage {
   width: number;
   height: number;
-  /** Row-major interleaved RGB byte data (length = width * height * 3). */
+  /** Row-major interleaved 3-channel byte data (length = width * height * 3). */
   data: Uint8Array | Uint8ClampedArray;
   channels: 3;
+  /**
+   * Channel order: 'bgr' (standard for OpenCV Mats / rectifyMat) or 'rgb'.
+   * Defaults to 'bgr' to match OpenCV runtime buffers.
+   */
+  colorOrder?: 'bgr' | 'rgb';
 }
 
 export type SquareOccupancy = 'empty' | 'occupied' | 'uncertain';

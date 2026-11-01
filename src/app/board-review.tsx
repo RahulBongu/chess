@@ -195,7 +195,7 @@ export default function BoardReviewScreen() {
           const buf = rectified.toBuffer('uint8');
           const isColor = buf.channels === 3;
           const imgData: AnyImageData = isColor
-            ? { width: 800, height: 800, channels: 3, data: buf.buffer }
+            ? { width: 800, height: 800, channels: 3, data: buf.buffer, colorOrder: 'bgr' }
             : { width: 800, height: 800, data: buf.buffer };
 
           const geometry = computeRectifiedBoardGeometry(pixelCorners, { view: orientation });

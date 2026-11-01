@@ -466,4 +466,83 @@ describe('offline chess piece HOG feature extraction and classification', () => 
       );
     }
   });
+
+  it('15. Python/TypeScript parity on 100x100 BGR mobile sampling and HOG feature extraction', () => {
+    // Deterministic 100x100 BGR test fixture with 4 colored quadrants and central circular piece
+    const width = 100;
+    const height = 100;
+    const data = new Uint8Array(width * height * 3);
+
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const idx = (y * width + x) * 3;
+        if (y < 50 && x < 50) {
+          // Top-left: Pure Red (BGR [0, 0, 255])
+          data[idx] = 0; data[idx + 1] = 0; data[idx + 2] = 255;
+        } else if (y < 50 && x >= 50) {
+          // Top-right: Pure Green (BGR [0, 255, 0])
+          data[idx] = 0; data[idx + 1] = 255; data[idx + 2] = 0;
+        } else if (y >= 50 && x < 50) {
+          // Bottom-left: Pure Blue (BGR [255, 0, 0])
+          data[idx] = 255; data[idx + 1] = 0; data[idx + 2] = 0;
+        } else {
+          // Bottom-right: Wood tone (BGR [140, 180, 210])
+          data[idx] = 140; data[idx + 1] = 180; data[idx + 2] = 210;
+        }
+      }
+    }
+
+    const cy = 50, cx = 50, rad = 20;
+    for (let y = cy - rad; y <= cy + rad; y += 1) {
+      for (let x = cx - rad; x <= cx + rad; x += 1) {
+        if ((x - cx) ** 2 + (y - cy) ** 2 <= rad ** 2) {
+          const idx = (y * width + x) * 3;
+          data[idx] = 30; data[idx + 1] = 30; data[idx + 2] = 30;
+        }
+      }
+    }
+
+    const bgrImg = { width, height, data, channels: 3 as const, colorOrder: 'bgr' as const };
+    const tsHog = extractPieceHogFeatures(bgrImg, { roi: { x: 0, y: 0, width: 100, height: 100 } });
+    assert.equal(tsHog.length, 288);
+
+    // Python reference values from verify_preprocessing_parity.py on identical 100x100 BGR fixture
+    const expectedFeaturePoints: [number, number][] = [
+      [0, 0.000000],
+      [8, 0.592673],
+      [32, 0.288792],
+      [64, 0.320126],
+      [128, 0.120523],
+      [200, 0.130177],
+      [256, 0.365449],
+    ];
+
+    for (const [idx, expectedVal] of expectedFeaturePoints) {
+      const diff = Math.abs(tsHog[idx] - expectedVal);
+      assert.ok(
+        diff < 1e-4,
+        `Feature index ${idx} value ${tsHog[idx].toFixed(6)} diverges from Python reference ${expectedVal.toFixed(6)} (diff ${diff})`,
+      );
+    }
+
+    // End-to-end inference parity with production model
+    const prodModel = getDefaultPieceClassifierModel();
+    const resProd = classifyPieceFromPatch(bgrImg, {
+      model: prodModel,
+      roi: { x: 0, y: 0, width: 100, height: 100 },
+    });
+    assert.equal(resProd.predictedType, 'knight');
+    assert.ok(Math.abs(resProd.confidence - 0.977434) < 1e-4);
+    assert.ok(Math.abs(resProd.margin - 0.955119) < 1e-4);
+
+    // End-to-end inference parity with experimental candidate model
+    const expModel = getExperimentalPieceClassifierModel();
+    const resExp = classifyPieceFromPatch(bgrImg, {
+      model: expModel,
+      roi: { x: 0, y: 0, width: 100, height: 100 },
+    });
+    assert.equal(resExp.predictedType, 'knight');
+    assert.ok(Math.abs(resExp.confidence - 0.726998) < 1e-4);
+    assert.ok(Math.abs(resExp.margin - 0.516422) < 1e-4);
+  });
 });

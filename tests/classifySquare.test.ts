@@ -106,7 +106,73 @@ function createSyntheticTournamentRgb(): RgbImage {
     }
   }
 
-  return { width, height, data, channels: 3 };
+  return { width, height, data, channels: 3, colorOrder: 'rgb' };
+}
+
+/**
+ * Creates a 3-channel BGR tournament green synthetic board matching OpenCV's native Mat layout.
+ */
+function createSyntheticTournamentBgr(): RgbImage {
+  const width = 800;
+  const height = 800;
+  const data = new Uint8Array(width * height * 3);
+
+  // Tournament board colors: buff/cream light squares, green dark squares
+  // In BGR: [Blue, Green, Red]
+  const lightBgr = [212, 236, 236]; // RGB: [236, 236, 212]
+  const darkBgr = [56, 108, 48];    // RGB: [48, 108, 56]
+
+  for (let y = 0; y < height; y += 1) {
+    const r = Math.floor(y / 100);
+    for (let x = 0; x < width; x += 1) {
+      const c = Math.floor(x / 100);
+      const isLight = (r + c) % 2 === 0;
+      const bgr = isLight ? lightBgr : darkBgr;
+      const idx = (y * width + x) * 3;
+      data[idx] = bgr[0];     // B
+      data[idx + 1] = bgr[1]; // G
+      data[idx + 2] = bgr[2]; // R
+    }
+  }
+
+  return { width, height, data, channels: 3, colorOrder: 'bgr' };
+}
+
+function drawSyntheticPieceBgr(
+  image: RgbImage,
+  gridRow: number,
+  gridCol: number,
+  color: 'white' | 'black',
+  radius = 32,
+): void {
+  const cx = gridCol * 100 + 50;
+  const cy = gridRow * 100 + 50;
+
+  for (let y = cy - radius; y <= cy + radius; y += 1) {
+    for (let x = cx - radius; x <= cx + radius; x += 1) {
+      const d = Math.hypot(x - cx, y - cy);
+      if (d <= radius) {
+        const idx = (y * 800 + x) * 3;
+        if (color === 'white') {
+          // BGR: [B, G, R]
+          if (d > radius - 3) {
+            image.data[idx] = 115;     // B
+            image.data[idx + 1] = 125; // G
+            image.data[idx + 2] = 125; // R
+          } else {
+            image.data[idx] = 228;     // B
+            image.data[idx + 1] = 242; // G
+            image.data[idx + 2] = 245; // R
+          }
+        } else {
+          // Dark charcoal piece
+          image.data[idx] = 32;      // B
+          image.data[idx + 1] = 28;  // G
+          image.data[idx + 2] = 28;  // R
+        }
+      }
+    }
+  }
 }
 
 function drawSyntheticPieceRgb(
@@ -155,6 +221,7 @@ describe('square extraction and classical classification [synthetic fixtures onl
     const pGrayDark = getPixelLuminanceAndRgb(gray, 150, 50);
     assert.equal(pGrayDark.lum, 50);
 
+    // RGB image: [R, G, B]
     const rgb = createSyntheticTournamentRgb();
     const pRgbLight = getPixelLuminanceAndRgb(rgb, 50, 50);
     assert.equal(pRgbLight.r, 236);
@@ -162,6 +229,82 @@ describe('square extraction and classical classification [synthetic fixtures onl
     assert.equal(pRgbLight.b, 212);
     // 0.299*236 + 0.587*236 + 0.114*212 = 233
     assert.ok(Math.abs(pRgbLight.lum - 233) <= 1);
+
+    // BGR image (OpenCV native layout): [B, G, R]
+    const bgr = createSyntheticTournamentBgr();
+    const pBgrLight = getPixelLuminanceAndRgb(bgr, 50, 50);
+    assert.equal(pBgrLight.r, 236);
+    assert.equal(pBgrLight.g, 236);
+    assert.equal(pBgrLight.b, 212);
+    assert.ok(Math.abs(pBgrLight.lum - 233) <= 1);
+  });
+
+  it('correctly decodes BGR buffer channels and computes standard luminance for pure colors', () => {
+    // 6-pixel controlled test image in OpenCV BGR layout:
+    // Pixel 0: Pure Red   (RGB [255, 0, 0]   -> BGR [0, 0, 255])
+    // Pixel 1: Pure Green (RGB [0, 255, 0]   -> BGR [0, 255, 0])
+    // Pixel 2: Pure Blue  (RGB [0, 0, 255]   -> BGR [255, 0, 0])
+    // Pixel 3: Pure White (RGB [255, 255, 255] -> BGR [255, 255, 255])
+    // Pixel 4: Pure Black (RGB [0, 0, 0]     -> BGR [0, 0, 0])
+    // Pixel 5: Mid-Gray   (RGB [128, 128, 128] -> BGR [128, 128, 128])
+    const bgrData = new Uint8Array([
+      0, 0, 255,       // Pixel 0: Red
+      0, 255, 0,       // Pixel 1: Green
+      255, 0, 0,       // Pixel 2: Blue
+      255, 255, 255,   // Pixel 3: White
+      0, 0, 0,         // Pixel 4: Black
+      128, 128, 128,   // Pixel 5: Mid-Gray
+    ]);
+    const bgrImg: RgbImage = { width: 6, height: 1, data: bgrData, channels: 3, colorOrder: 'bgr' };
+
+    // 1. Pure Red: R=255, G=0, B=0
+    // Expected Y = round(0.299 * 255 + 0.587 * 0 + 0.114 * 0) = round(76.245) = 76
+    const pRed = getPixelLuminanceAndRgb(bgrImg, 0, 0);
+    assert.equal(pRed.r, 255, 'Pure Red: r must be 255');
+    assert.equal(pRed.g, 0, 'Pure Red: g must be 0');
+    assert.equal(pRed.b, 0, 'Pure Red: b must be 0');
+    assert.equal(pRed.lum, 76, 'Pure Red luminance must be 76 (round(0.299 * 255))');
+
+    // 2. Pure Green: R=0, G=255, B=0
+    // Expected Y = round(0.299 * 0 + 0.587 * 255 + 0.114 * 0) = round(149.685) = 150
+    const pGreen = getPixelLuminanceAndRgb(bgrImg, 1, 0);
+    assert.equal(pGreen.r, 0, 'Pure Green: r must be 0');
+    assert.equal(pGreen.g, 255, 'Pure Green: g must be 255');
+    assert.equal(pGreen.b, 0, 'Pure Green: b must be 0');
+    assert.equal(pGreen.lum, 150, 'Pure Green luminance must be 150 (round(0.587 * 255))');
+
+    // 3. Pure Blue: R=0, G=0, B=255
+    // Expected Y = round(0.299 * 0 + 0.587 * 0 + 0.114 * 255) = round(29.07) = 29
+    const pBlue = getPixelLuminanceAndRgb(bgrImg, 2, 0);
+    assert.equal(pBlue.r, 0, 'Pure Blue: r must be 0');
+    assert.equal(pBlue.g, 0, 'Pure Blue: g must be 0');
+    assert.equal(pBlue.b, 255, 'Pure Blue: b must be 255');
+    assert.equal(pBlue.lum, 29, 'Pure Blue luminance must be 29 (round(0.114 * 255))');
+
+    // Catch Red/Blue swap regression:
+    // If Red and Blue weights were swapped, Red would yield 29 and Blue would yield 76.
+    assert.ok(pRed.lum > pBlue.lum, 'Pure Red luminance (76) must exceed Pure Blue luminance (29)');
+
+    // 4. Pure White
+    const pWhite = getPixelLuminanceAndRgb(bgrImg, 3, 0);
+    assert.equal(pWhite.r, 255);
+    assert.equal(pWhite.g, 255);
+    assert.equal(pWhite.b, 255);
+    assert.equal(pWhite.lum, 255);
+
+    // 5. Pure Black
+    const pBlack = getPixelLuminanceAndRgb(bgrImg, 4, 0);
+    assert.equal(pBlack.r, 0);
+    assert.equal(pBlack.g, 0);
+    assert.equal(pBlack.b, 0);
+    assert.equal(pBlack.lum, 0);
+
+    // 6. Mid-Gray
+    const pMid = getPixelLuminanceAndRgb(bgrImg, 5, 0);
+    assert.equal(pMid.r, 128);
+    assert.equal(pMid.g, 128);
+    assert.equal(pMid.b, 128);
+    assert.equal(pMid.lum, 128);
   });
 
   it('classifies a 100% empty synthetic board with 0 false positives (64/64 empty)', () => {
@@ -318,6 +461,24 @@ describe('square extraction and classical classification [synthetic fixtures onl
     assert.equal(e5.occupancy, 'occupied');
     assert.equal(e5.pieceColor, 'black');
     assert.ok(e5.features.meanR !== undefined && e5.features.meanR < 50);
+
+    // Also verify native BGR tournament board yields identical classification & accurate meanR/meanB
+    const bgrBoard = createSyntheticTournamentBgr();
+    drawSyntheticPieceBgr(bgrBoard, 4, 4, 'white');
+    drawSyntheticPieceBgr(bgrBoard, 3, 4, 'black');
+    const bgrResult = classifyRectifiedBoard(bgrBoard, geom);
+
+    const bgrE4 = bgrResult.squareByName['e4'];
+    assert.equal(bgrE4.occupancy, 'occupied');
+    assert.equal(bgrE4.pieceColor, 'white');
+    assert.ok(bgrE4.features.meanR !== undefined && bgrE4.features.meanR > 200);
+    assert.ok(bgrE4.features.meanB !== undefined && bgrE4.features.meanB > 200);
+
+    const bgrE5 = bgrResult.squareByName['e5'];
+    assert.equal(bgrE5.occupancy, 'occupied');
+    assert.equal(bgrE5.pieceColor, 'black');
+    assert.ok(bgrE5.features.meanR !== undefined && bgrE5.features.meanR < 50);
+    assert.ok(bgrE5.features.meanB !== undefined && bgrE5.features.meanB < 50);
   });
 
   it('detects ambiguous edge/shadow features and flags uncertainty with confidence < 0.70', () => {
