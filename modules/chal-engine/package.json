@@ -1,0 +1,7 @@
+{
+  "name": "chal-engine",
+  "version": "1.0.0",
+  "description": "Embedded Chal v2.0.0 chess engine native module",
+  "main": "src/index.ts",
+  "types": "src/index.ts"
+}
