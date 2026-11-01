@@ -353,19 +353,28 @@ def evaluate_zenodo_split(
 
 def print_metrics_table(title: str, metrics: Dict):
     """Prints a structured ASCII report of evaluation metrics."""
+    n_samples = metrics['n_samples']
+    abstain_cnt = metrics['abstain_count']
+    accepted_cnt = n_samples - abstain_cnt
+    coverage_pct = (accepted_cnt / n_samples) * 100.0 if n_samples > 0 else 0.0
+
     print(f"\n========================================================================================")
     print(f" {title.upper()}")
     print(f"========================================================================================")
-    print(f"Total Evaluated Samples: {metrics['n_samples']}")
-    print(f"Top-1 Accuracy:          {metrics['top1_accuracy'] * 100:.2f}% ({metrics['top1_correct']}/{metrics['n_samples']})")
-    print(f"Top-2 Accuracy:          {metrics['top2_accuracy'] * 100:.2f}% ({metrics['top2_correct']}/{metrics['n_samples']})")
-    print(f"Abstention Rate:         {metrics['abstain_rate'] * 100:.2f}% ({metrics['abstain_count']}/{metrics['n_samples']}) [conf < 0.60 or margin < 0.20]")
+    print(f"Total Evaluated Samples: {n_samples}")
+    print(f"Top-1 Accuracy:          {metrics['top1_accuracy'] * 100:.2f}% ({metrics['top1_correct']}/{n_samples})")
+    print(f"Top-2 Accuracy:          {metrics['top2_accuracy'] * 100:.2f}% ({metrics['top2_correct']}/{n_samples})")
+    print(f"Abstention Rate:         {metrics['abstain_rate'] * 100:.2f}% ({abstain_cnt}/{n_samples}) [conf < 0.60 or margin < 0.20]")
+    print(f"Coverage:                {coverage_pct:.2f}% ({accepted_cnt}/{n_samples} accepted for prediction)")
 
     lat = metrics.get("latency", {})
     if lat:
-        print(f"HOG Extraction Latency:  {lat['avg_extraction_ms_per_patch']:.3f} ms / patch")
-        print(f"Linear Inference Latency:{lat['avg_inference_ms_per_patch']:.4f} ms / patch")
-        print(f"Projected Full Board:    {lat['projected_64_square_board_ms']:.1f} ms / 64 squares")
+        print(f"\n[WORKSTATION PYTHON TIMING: Windows 11 x86_64, single-thread, unoptimized PIL]")
+        print(f"HOG Extraction Latency:   {lat['avg_extraction_ms_per_patch']:.3f} ms / patch")
+        print(f"Classifier Infer Latency: {lat['avg_inference_ms_per_patch']:.4f} ms / patch")
+        print(f"Total Classifier Latency: {lat['total_ms_per_patch']:.3f} ms / patch")
+        print(f"Projected 64-Board Time:  {lat['projected_64_square_board_ms']:.1f} ms / 64 squares")
+        print(f"Target Device Latency:    UNVERIFIED (physical on-device end-to-end frame profiling required)")
 
     print("\n--- Per-Class Classification Report ---")
     print(f"{'Class':<10} {'Precision':>10} {'Recall':>10} {'F1-Score':>10} {'Support':>10}")

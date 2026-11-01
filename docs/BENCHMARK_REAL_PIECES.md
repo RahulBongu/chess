@@ -121,8 +121,18 @@ To select hyperparameter $C$ and regularization without touching Set 4, a 3-fold
 | **Queen Recall** | 1.56% (2 / 128) | **5.47%** (7 / 128) | +3.91 pp |
 | **King Recall** | 7.03% (9 / 128) | **21.09%** (27 / 128) | +14.06 pp |
 | **Abstention Rate** | 16.54% (127 / 768) | **89.58%** (688 / 768) | +73.04 pp |
-| **Non-Abstained Accuracy** | 16.54% | **72.50%** (58 / 80) | **+55.96 pp** |
-| **Inference Latency** | 0.11 ms / patch | 0.11 ms / patch | 0.00 ms (identical shape) |
+| **Coverage** | 83.46% (641 / 768) | **10.42%** (80 / 768) | -73.04 pp |
+| **Accuracy on Accepted** | 16.54% (106 / 641) | **72.50%** (58 / 80) | **+55.96 pp** |
+| **Error Rate on Accepted** | 83.46% (535 / 641) | **27.50%** (22 / 80) | **-55.96 pp** |
+| **Model Parameters** | 1,734 float32 (6.77 KB raw) | 1,734 float32 (6.77 KB raw) | Identical structure |
+| **TypeScript File Size** | 19.5 KB text | 19.5 KB text | Identical format |
+| **HOG Extraction Latency\*** | 13.0 ms / patch | 13.125 ms / patch | Workstation Python |
+| **Classifier Inference Latency\*** | 0.11 ms / patch | 0.109 ms / patch | Workstation Python |
+| **Total Classifier Latency\*** | 13.11 ms / patch | 13.234 ms / patch | Workstation Python |
+| **Projected 64-Board Latency\*** | ~840 ms / 64 board | ~847 ms / 64 board | Workstation Python |
+| **Target Device Latency (vivo)** | **UNVERIFIED** | **UNVERIFIED** | Awaiting device profiling |
+
+*\*Workstation benchmark environment: Windows 11, AMD Ryzen 5, Python 3.13.2 x86_64, single-thread. The 150 ms requirement is defined for the target Android device and cannot be claimed from workstation Python timings.*
 
 ---
 
@@ -145,7 +155,9 @@ Macro Avg:       0.4073      0.4062      0.3650         768
 Overall Top-1:   40.62% (312 / 768)
 Overall Top-2:   56.77% (436 / 768)
 Abstention Rate: 89.58% (688 / 768) [confidence < 0.60 or margin < 0.20]
-Non-Abstained:   72.50% Accuracy on 80 confident predictions (58 / 80)
+Coverage:        10.42% (80 / 768 accepted)
+Accuracy (Acc):  72.50% (58 / 80 accepted correct)
+Error Rate (Acc):27.50% (22 / 80 accepted incorrect)
 ```
 
 ### 6.3 Confusion Matrix for Candidate Model (Set 4)
@@ -177,11 +189,16 @@ Requirement                         Gate Standard      Candidate Measured    Out
 Top-1 Accuracy (Unseen Physical):   >= 88.0%           40.62%                FAIL
 Top-2 Accuracy (Unseen Physical):   >= 96.0%           56.77%                FAIL
 King & Queen Recall:                >= 90.0%           K: 21.1%, Q: 5.5%     FAIL
-Abstention on Ambiguous Inputs:     >= 80.0%           89.58%                PASS
+Abstention Minimum (>= 80%):        >= 80.0%           89.58%                PASS (>= 80%)
+Abstention Target (>= 90%):         >= 90.0%           89.58%                FAIL (< 90%)
+Target Device Latency (vivo V2336): <= 150 ms / board  UNVERIFIED            UNVERIFIED
 Zero-Silent-Error Policy:           100.0%             100.0%                PASS
 Production Weight Isolation:        Strict Isolation   pieceModelWeights.ts  PASS
 Candidate Export Location:          Dedicated File     experimentalPiece...  PASS
 ========================================================================================
+OVERALL DECISION: DO NOT PROMOTE TO PRODUCTION.
+PRESERVE EXPERIMENTAL MODEL IN SEPARATE FILE.
+```
 OVERALL DECISION: DO NOT PROMOTE TO PRODUCTION.
 PRESERVE EXPERIMENTAL MODEL IN SEPARATE FILE.
 ```
