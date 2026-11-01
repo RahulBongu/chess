@@ -39,3 +39,19 @@ Docs: https://docs.expo.dev/eas/index.md
 - If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
 - Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally, or `eas build --profile development`.
 - Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md
+
+## Git Workflow Rules
+
+1. Before every task, inspect Git status, branch and HEAD.
+2. Preserve unrelated working-tree changes, untracked files, APKs, and build artifacts.
+3. After each completed fix or meaningful feature milestone, run applicable tests and validation.
+4. Review the diff and stage only files belonging to the completed task.
+5. Create a descriptive commit after validation passes. Keep distinct fixes in separate commits when practical.
+6. Never create empty commits or artificial commits solely to inflate contribution counts.
+7. Never amend or rewrite previous commits, or use reset/clean/stash/revert to discard work, without explicit approval.
+8. Do not commit a task as complete if its required checks failed. Report exceptions honestly.
+9. After committing, report the commit hash, message, tests and remaining working-tree changes.
+10. Push verified commits to the configured GitHub remote only when the task is approved for publication. Never force-push or overwrite remote work.
+11. Before publishing, verify the Git author email is associated with my GitHub account and check that the target branch and repository satisfy GitHub contribution requirements.
+12. Respect task-specific instructions that explicitly prohibit commits or pushes, such as read-only audits.
+
