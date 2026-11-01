@@ -156,3 +156,47 @@ export interface BoardClassificationResult {
   };
 }
 
+export type PieceType = 'pawn' | 'knight' | 'bishop' | 'rook' | 'queen' | 'king';
+
+export const PIECE_TYPES: readonly PieceType[] = [
+  'pawn',
+  'knight',
+  'bishop',
+  'rook',
+  'queen',
+  'king',
+] as const;
+
+export interface PiecePredictionCandidate {
+  type: PieceType;
+  score: number;
+  probability: number;
+}
+
+export interface PieceClassificationResult {
+  predictedType: PieceType | null;
+  confidence: number;
+  margin: number;
+  isUncertain: boolean;
+  candidates: PiecePredictionCandidate[];
+  features: Float32Array;
+  color: 'white' | 'black' | 'uncertain';
+  reason?: string;
+}
+
+export interface PieceClassifierModel {
+  name: string;
+  version: string;
+  featureDimension: number;
+  classes: PieceType[];
+  weights: number[][];
+  biases: number[];
+  temperature?: number;
+  metadata?: {
+    trainedOn?: string;
+    license?: string;
+    metrics?: Record<string, number>;
+  };
+}
+
+
