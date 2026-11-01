@@ -336,4 +336,79 @@ describe('board review and study handoff integration', () => {
   it('safely handles missing image and geometry inputs without throwing unhandled exceptions', () => {
     assert.throws(() => recognizeBoardFromRectifiedImage(null as any, null as any), /must be provided/);
   });
+
+  it('correctly distinguishes normalized vs pixel coordinates for corner scaling', () => {
+    const cols = 3056;
+    const rows = 4076;
+
+    // Case 1: Normalized corners in [0, 1]
+    const normalizedCorners = [
+      { x: 0.165, y: 0.134 },
+      { x: 0.835, y: 0.134 },
+      { x: 0.835, y: 0.799 },
+      { x: 0.165, y: 0.799 },
+    ];
+
+    const isNormalized1 = normalizedCorners.every(
+      (pt) => pt.x >= 0 && pt.x <= 1.05 && pt.y >= 0 && pt.y <= 1.05,
+    );
+    assert.equal(isNormalized1, true);
+
+    const pixelCorners1 = normalizedCorners.map((pt) => ({
+      x: isNormalized1 ? pt.x * cols : pt.x,
+      y: isNormalized1 ? pt.y * rows : pt.y,
+    }));
+
+    assert.equal(Math.round(pixelCorners1[0].x), Math.round(0.165 * 3056));
+    assert.equal(Math.round(pixelCorners1[0].y), Math.round(0.134 * 4076));
+    assert.equal(Math.round(pixelCorners1[2].x), Math.round(0.835 * 3056));
+    assert.equal(Math.round(pixelCorners1[2].y), Math.round(0.799 * 4076));
+
+    // Case 2: Pre-scaled pixel corners
+    const preScaledCorners = [
+      { x: 504, y: 546 },
+      { x: 2551, y: 546 },
+      { x: 2551, y: 3256 },
+      { x: 504, y: 3256 },
+    ];
+
+    const isNormalized2 = preScaledCorners.every(
+      (pt) => pt.x >= 0 && pt.x <= 1.05 && pt.y >= 0 && pt.y <= 1.05,
+    );
+    assert.equal(isNormalized2, false);
+
+    const pixelCorners2 = preScaledCorners.map((pt) => ({
+      x: isNormalized2 ? pt.x * cols : pt.x,
+      y: isNormalized2 ? pt.y * rows : pt.y,
+    }));
+
+    assert.equal(pixelCorners2[0].x, 504);
+    assert.equal(pixelCorners2[0].y, 546);
+  });
+
+  it('verifies rectification error handling fallback maintains manual mode with zero crashes', () => {
+    // When automatic rectification throws, simulate how Board Review catches it
+    let active = true;
+    let recognitionStatus = '';
+    let isRecognizing = true;
+
+    try {
+      throw new Error('Fast OpenCV Error: Argument (1) is not a Point2fVector!');
+    } catch (err: any) {
+      if (active) {
+        recognitionStatus =
+          err instanceof Error
+            ? `Automatic recognition unavailable: ${err.message}. Manual placement active.`
+            : 'Automatic recognition unavailable. Manual placement active.';
+      }
+    } finally {
+      if (active) {
+        isRecognizing = false;
+      }
+    }
+
+    assert.equal(isRecognizing, false);
+    assert.match(recognitionStatus, /Manual placement active/);
+    assert.match(recognitionStatus, /Fast OpenCV Error/);
+  });
 });

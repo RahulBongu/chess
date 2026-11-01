@@ -312,4 +312,280 @@ describe('perspective rectification and alignment [synthetic fixtures only]', ()
       /OpenCV native module is not available in this environment/,
     );
   });
+
+  it('correctly constructs Point2fVector, passes required parameters, and manages lifecycle in rectifyMat', () => {
+    // Regression test for "Fast OpenCV Error: Argument (1) is not a Point2fVector!"
+    const released = new Set<any>();
+    const calls: { method: string; args: any[] }[] = [];
+
+    class MockPoint2f {
+      type = 'point2f';
+      released = false;
+      x: number;
+      y: number;
+      constructor(x: number, y: number) {
+        this.x = x;
+        this.y = y;
+      }
+      release() {
+        this.released = true;
+        released.add(this);
+      }
+      static create(x: number, y: number) {
+        return new MockPoint2f(x, y);
+      }
+    }
+
+    class MockPoint2fVector {
+      type = 'point2f_vector';
+      items: MockPoint2f[] = [];
+      released = false;
+      push(pt: MockPoint2f) {
+        this.items.push(pt);
+      }
+      release() {
+        this.released = true;
+        released.add(this);
+      }
+      static create() {
+        return new MockPoint2fVector();
+      }
+    }
+
+    class MockSize {
+      type = 'size';
+      released = false;
+      width: number;
+      height: number;
+      constructor(width: number, height: number) {
+        this.width = width;
+        this.height = height;
+      }
+      release() {
+        this.released = true;
+        released.add(this);
+      }
+      static create(w: number, h: number) {
+        return new MockSize(w, h);
+      }
+    }
+
+    class MockScalar {
+      type = 'scalar';
+      released = false;
+      v0: number;
+      v1: number;
+      v2: number;
+      v3: number;
+      constructor(v0: number, v1: number, v2: number, v3: number) {
+        this.v0 = v0;
+        this.v1 = v1;
+        this.v2 = v2;
+        this.v3 = v3;
+      }
+      release() {
+        this.released = true;
+        released.add(this);
+      }
+      static create(v0: number, v1: number, v2: number, v3: number) {
+        return new MockScalar(v0, v1, v2, v3);
+      }
+    }
+
+    class MockMat {
+      type = 'mat';
+      channels: number;
+      released = false;
+      rows: number;
+      cols: number;
+      dataType: number;
+      constructor(rows: number, cols: number, dataType: number) {
+        this.rows = rows;
+        this.cols = cols;
+        this.dataType = dataType;
+        this.channels = dataType === 0 ? 1 : dataType === 24 ? 4 : 3;
+      }
+      release() {
+        this.released = true;
+        released.add(this);
+      }
+      static create(rows: number, cols: number, dataType: number) {
+        return new MockMat(rows, cols, dataType);
+      }
+    }
+
+    const mockOpenCV = {
+      getPerspectiveTransform(src: any, dst: any, solveMethod: number) {
+        calls.push({ method: 'getPerspectiveTransform', args: [src, dst, solveMethod] });
+        if (!src || src.type !== 'point2f_vector') {
+          throw new Error('Fast OpenCV Error: Argument (1) is not a Point2fVector!');
+        }
+        if (!dst || dst.type !== 'point2f_vector') {
+          throw new Error('Fast OpenCV Error: Argument (2) is not a Point2fVector!');
+        }
+        if (typeof solveMethod !== 'number') {
+          throw new Error('Fast OpenCV Error: Argument (3) is not a number!');
+        }
+        return new MockMat(3, 3, 5);
+      },
+      warpPerspective(src: any, dst: any, M: any, size: any, flags: any, borderMode: any, borderValue: any) {
+        calls.push({ method: 'warpPerspective', args: [src, dst, M, size, flags, borderMode, borderValue] });
+        if (!src || src.type !== 'mat') throw new Error('Fast OpenCV Error: Argument (1) is not a Mat!');
+        if (!dst || dst.type !== 'mat') throw new Error('Fast OpenCV Error: Argument (2) is not a Mat!');
+        if (!M || M.type !== 'mat') throw new Error('Fast OpenCV Error: Argument (3) is not a Mat!');
+        if (!size || size.type !== 'size') throw new Error('Fast OpenCV Error: Argument (4) is not a Size!');
+        if (typeof flags !== 'number') throw new Error('Fast OpenCV Error: Argument (5) is not a number!');
+        if (typeof borderMode !== 'number') throw new Error('Fast OpenCV Error: Argument (6) is not a number!');
+        if (!borderValue || borderValue.type !== 'scalar') {
+          throw new Error('Fast OpenCV Error: Argument (7) is not a Scalar!');
+        }
+      },
+    };
+
+    const mockModule = {
+      OpenCV: mockOpenCV,
+      Mat: MockMat,
+      Point2f: MockPoint2f,
+      Point2fVector: MockPoint2fVector,
+      Size: MockSize,
+      Scalar: MockScalar,
+      DataTypes: { CV_8UC1: 0, CV_8UC3: 16, CV_8UC4: 24 },
+      InterpolationFlags: { INTER_LINEAR: 1 },
+      BorderTypes: { BORDER_CONSTANT: 0 },
+      DecompTypes: { DECOMP_LU: 0 },
+    };
+
+    const dummySrc = new MockMat(1000, 1000, 16);
+    const result = rectifyMat(dummySrc as any, SYNTHETIC_AXIS_ALIGNED, 800, mockModule);
+
+    assert.ok(result.rectified, 'Rectified mat must be returned');
+    assert.equal(result.rectified.rows, 800);
+    assert.equal(result.rectified.cols, 800);
+
+    // Verify calls
+    const getTransformCall = calls.find((c) => c.method === 'getPerspectiveTransform');
+    assert.ok(getTransformCall, 'getPerspectiveTransform must be called');
+    const [srcVec, dstVec, solveMethod] = getTransformCall.args;
+
+    assert.equal(srcVec.type, 'point2f_vector');
+    assert.equal(srcVec.items.length, 4);
+    assert.equal(srcVec.items[0].x, 100);
+    assert.equal(srcVec.items[0].y, 100);
+    assert.equal(srcVec.items[1].x, 700);
+    assert.equal(srcVec.items[1].y, 100);
+    assert.equal(srcVec.items[2].x, 700);
+    assert.equal(srcVec.items[2].y, 700);
+    assert.equal(srcVec.items[3].x, 100);
+    assert.equal(srcVec.items[3].y, 700);
+
+    assert.equal(dstVec.type, 'point2f_vector');
+    assert.equal(dstVec.items.length, 4);
+    assert.equal(dstVec.items[0].x, 0);
+    assert.equal(dstVec.items[0].y, 0);
+    assert.equal(dstVec.items[1].x, 800);
+    assert.equal(dstVec.items[1].y, 0);
+    assert.equal(dstVec.items[2].x, 800);
+    assert.equal(dstVec.items[2].y, 800);
+    assert.equal(dstVec.items[3].x, 0);
+    assert.equal(dstVec.items[3].y, 800);
+
+    assert.equal(solveMethod, 0);
+
+    const warpCall = calls.find((c) => c.method === 'warpPerspective');
+    assert.ok(warpCall, 'warpPerspective must be called');
+    const [, dstMat, transformMat, sizeObj, flags, borderMode, borderScalar] = warpCall.args;
+    assert.equal(dstMat.rows, 800);
+    assert.equal(dstMat.cols, 800);
+    assert.equal(dstMat.dataType, 16); // CV_8UC3
+    assert.equal(sizeObj.width, 800);
+    assert.equal(sizeObj.height, 800);
+    assert.equal(flags, 1);
+    assert.equal(borderMode, 0);
+    assert.equal(borderScalar.type, 'scalar');
+
+    // Verify cleanup of intermediate objects
+    assert.ok(released.has(srcVec), 'srcVector must be released in finally');
+    assert.ok(released.has(dstVec), 'dstVector must be released in finally');
+    assert.ok(released.has(transformMat), 'transformMat must be released in finally');
+    assert.ok(released.has(sizeObj), 'sizeObj must be released in finally');
+    assert.ok(released.has(borderScalar), 'borderScalar must be released in finally');
+    for (const pt of srcVec.items) {
+      assert.ok(released.has(pt), 'Source Point2f must be released');
+    }
+    for (const pt of dstVec.items) {
+      assert.ok(released.has(pt), 'Destination Point2f must be released');
+    }
+
+    // Result mat should NOT be released until release() is called
+    assert.equal((result.rectified as any).released, false);
+    result.release();
+    assert.equal((result.rectified as any).released, true);
+  });
+
+  it('safely releases allocated dstMat on warpPerspective failure', () => {
+    const released = new Set<any>();
+
+    class MockMat {
+      type = 'mat';
+      released = false;
+      rows: number;
+      cols: number;
+      dataType: number;
+      constructor(rows: number, cols: number, dataType: number) {
+        this.rows = rows;
+        this.cols = cols;
+        this.dataType = dataType;
+      }
+      release() {
+        this.released = true;
+        released.add(this);
+      }
+      static create(rows: number, cols: number, dataType: number) {
+        return new MockMat(rows, cols, dataType);
+      }
+    }
+
+    const failingMock = {
+      OpenCV: {
+        getPerspectiveTransform: () => new MockMat(3, 3, 5),
+        warpPerspective: () => {
+          throw new Error('Simulated warp failure');
+        },
+      },
+      Mat: MockMat,
+      Point2f: { create: () => ({ release: () => {} }) },
+      Point2fVector: { create: () => ({ push: () => {}, release: () => {} }) },
+      Size: { create: () => ({ release: () => {} }) },
+      Scalar: { create: () => ({ release: () => {} }) },
+      DataTypes: { CV_8UC3: 16 },
+      InterpolationFlags: { INTER_LINEAR: 1 },
+      BorderTypes: { BORDER_CONSTANT: 0 },
+      DecompTypes: { DECOMP_LU: 0 },
+    };
+
+    let caughtError: any = null;
+    try {
+      rectifyMat(new MockMat(100, 100, 16) as any, SYNTHETIC_AXIS_ALIGNED, 800, failingMock);
+    } catch (err) {
+      caughtError = err;
+    }
+
+    assert.ok(caughtError, 'Must throw on warp failure');
+    assert.match(caughtError.message, /Simulated warp failure/);
+    assert.equal(released.size >= 1, true, 'dstMat must be released in catch');
+  });
+
+  it('rejects invalid or non-convex corners before invoking OpenCV', () => {
+    const invalidCorners: [DetectedCorner, DetectedCorner, DetectedCorner, DetectedCorner] = [
+      { x: 0, y: 0 },
+      { x: 100, y: 100 },
+      { x: 200, y: 200 },
+      { x: 300, y: 300 }, // Collinear
+    ];
+
+    assert.throws(
+      () => rectifyMat({} as any, invalidCorners, 800, {} as any),
+      /do not form a strictly convex quadrilateral/,
+    );
+  });
 });

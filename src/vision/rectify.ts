@@ -429,55 +429,103 @@ export function rectifyGrayscaleBuffer(
 
 /**
  * Hardware-accelerated OpenCV Mat perspective rectification.
- * Guarantees release of all temporary intermediate Mat allocations.
+ * Uses Point2fVector and Point2f for getPerspectiveTransform as required by
+ * react-native-fast-opencv, and provides all 7 parameters to warpPerspective.
+ * Guarantees release of all temporary intermediate OpenCV allocations.
  */
 export function rectifyMat(
   src: Mat,
   corners: DetectedCorner[],
   targetSize = CANONICAL_BOARD_SIZE,
+  opencvModule?: any,
 ): { rectified: Mat; release: () => void } {
-  const opencv = getOpenCV();
+  const opencv = opencvModule ?? getOpenCV();
   if (!opencv) {
     throw new Error('OpenCV native module is not available in this environment.');
   }
-  const { OpenCV, Mat, DataTypes, Size, InterpolationFlags } = opencv;
+  const {
+    OpenCV,
+    Mat,
+    DataTypes,
+    Size,
+    InterpolationFlags,
+    Point2f,
+    Point2fVector,
+    DecompTypes,
+    BorderTypes,
+    Scalar,
+  } = opencv;
 
   const ordered = validateAndOrderCorners(corners);
 
-  let srcPointsMat: any = null;
-  let dstPointsMat: any = null;
+  let srcVector: any = null;
+  let dstVector: any = null;
   let transformMat: any = null;
   let dstMat: any = null;
+  let sizeObj: any = null;
+  let borderScalar: any = null;
+  const srcPoints: any[] = [];
+  const dstPoints: any[] = [];
 
   try {
-    srcPointsMat = Mat.create(4, 1, DataTypes.CV_32FC2, [
-      ordered[0].x,
-      ordered[0].y,
-      ordered[1].x,
-      ordered[1].y,
-      ordered[2].x,
-      ordered[2].y,
-      ordered[3].x,
-      ordered[3].y,
-    ]);
-    dstPointsMat = Mat.create(4, 1, DataTypes.CV_32FC2, [
-      0,
-      0,
-      targetSize,
-      0,
-      targetSize,
-      targetSize,
-      0,
-      targetSize,
-    ]);
-    transformMat = OpenCV.getPerspectiveTransform(srcPointsMat, dstPointsMat);
-    dstMat = Mat.create(targetSize, targetSize, DataTypes.CV_8UC3);
+    const Point2fClass = Point2f ?? OpenCV?.Point2f;
+    const Point2fVectorClass = Point2fVector ?? OpenCV?.Point2fVector;
+    const SizeClass = Size ?? OpenCV?.Size;
+    const ScalarClass = Scalar ?? OpenCV?.Scalar;
+
+    if (!Point2fClass || !Point2fVectorClass) {
+      throw new Error('Point2f or Point2fVector is not available in OpenCV module.');
+    }
+
+    srcVector = Point2fVectorClass.create();
+    dstVector = Point2fVectorClass.create();
+
+    srcPoints.push(
+      Point2fClass.create(ordered[0].x, ordered[0].y),
+      Point2fClass.create(ordered[1].x, ordered[1].y),
+      Point2fClass.create(ordered[2].x, ordered[2].y),
+      Point2fClass.create(ordered[3].x, ordered[3].y),
+    );
+
+    dstPoints.push(
+      Point2fClass.create(0, 0),
+      Point2fClass.create(targetSize, 0),
+      Point2fClass.create(targetSize, targetSize),
+      Point2fClass.create(0, targetSize),
+    );
+
+    for (const pt of srcPoints) {
+      srcVector.push(pt);
+    }
+    for (const pt of dstPoints) {
+      dstVector.push(pt);
+    }
+
+    const solveMethod = DecompTypes?.DECOMP_LU ?? 0;
+    transformMat = OpenCV.getPerspectiveTransform(srcVector, dstVector, solveMethod);
+
+    const channels = (src as any)?.channels ?? 3;
+    const dataType =
+      channels === 1
+        ? (DataTypes?.CV_8UC1 ?? 0)
+        : channels === 4
+        ? (DataTypes?.CV_8UC4 ?? 24)
+        : (DataTypes?.CV_8UC3 ?? 16);
+
+    dstMat = Mat.create(targetSize, targetSize, dataType);
+    sizeObj = SizeClass.create(targetSize, targetSize);
+    borderScalar = ScalarClass?.create ? ScalarClass.create(0, 0, 0, 0) : null;
+    const borderMode = BorderTypes?.BORDER_CONSTANT ?? 0;
+    const interpFlag = InterpolationFlags?.INTER_LINEAR ?? 1;
+
     OpenCV.warpPerspective(
       src,
       dstMat,
       transformMat,
-      Size.create(targetSize, targetSize),
-      InterpolationFlags.INTER_LINEAR,
+      sizeObj,
+      interpFlag,
+      borderMode,
+      borderScalar,
     );
 
     const resultMat = dstMat;
@@ -488,11 +536,47 @@ export function rectifyMat(
       },
     };
   } catch (error) {
-    dstMat?.release();
+    dstMat?.release?.();
     throw error;
   } finally {
-    srcPointsMat?.release();
-    dstPointsMat?.release();
-    transformMat?.release();
+    for (const pt of srcPoints) {
+      try {
+        pt?.release?.();
+      } catch {
+        // Safe release
+      }
+    }
+    for (const pt of dstPoints) {
+      try {
+        pt?.release?.();
+      } catch {
+        // Safe release
+      }
+    }
+    try {
+      srcVector?.release?.();
+    } catch {
+      // Safe release
+    }
+    try {
+      dstVector?.release?.();
+    } catch {
+      // Safe release
+    }
+    try {
+      transformMat?.release?.();
+    } catch {
+      // Safe release
+    }
+    try {
+      sizeObj?.release?.();
+    } catch {
+      // Safe release
+    }
+    try {
+      borderScalar?.release?.();
+    } catch {
+      // Safe release
+    }
   }
 }

@@ -174,16 +174,24 @@ export default function BoardReviewScreen() {
         if (!base64 || !active) return;
 
         const { Mat } = opencv;
-        const src = Mat.createFromBase64(base64);
-
-        const pixelCorners: DetectedCorner[] = parsedCorners.map((pt) => ({
-          x: pt.x * src.cols,
-          y: pt.y * src.rows,
-        }));
-
-        const { rectified, release } = rectifyMat(src, pixelCorners, 800);
+        let src: any = null;
+        let releaseRectified: (() => void) | null = null;
 
         try {
+          src = Mat.createFromBase64(base64);
+
+          // Support both normalized [0, 1] coordinates and pixel coordinates
+          const isNormalized = parsedCorners.every(
+            (pt) => pt.x >= 0 && pt.x <= 1.05 && pt.y >= 0 && pt.y <= 1.05,
+          );
+          const pixelCorners: DetectedCorner[] = parsedCorners.map((pt) => ({
+            x: isNormalized ? pt.x * src.cols : pt.x,
+            y: isNormalized ? pt.y * src.rows : pt.y,
+          }));
+
+          const { rectified, release } = rectifyMat(src, pixelCorners, 800);
+          releaseRectified = release;
+
           const buf = rectified.toBuffer('uint8');
           const isColor = buf.channels === 3;
           const imgData: AnyImageData = isColor
@@ -203,8 +211,12 @@ export default function BoardReviewScreen() {
             );
           }
         } finally {
-          release();
-          src.release();
+          releaseRectified?.();
+          try {
+            src?.release?.();
+          } catch {
+            // Safe release
+          }
         }
       } catch (err: any) {
         if (active) {
