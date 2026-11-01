@@ -117,7 +117,7 @@ export default function ChessScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <Text style={styles.title}>AI Chess Navigator</Text>
-          <Text style={styles.subtitle}>Local chessboard — Stockfish analysis coming later</Text>
+          <Text style={styles.subtitle}>Local chessboard — on-device analysis is available in Board Study</Text>
         </View>
 
         <View style={styles.statusCard}>
@@ -182,9 +182,8 @@ export default function ChessScreen() {
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Analysis</Text>
-          <Text style={styles.unavailableText}>Unavailable until Stockfish is integrated.</Text>
           <Text style={styles.cardBody}>
-            This panel will later show the recommended move, source and destination squares, an arrow overlay, and a concise explanation.
+            Board Study includes on-device Chal 2.0.0 analysis with an explicit heuristic fallback. This main board remains a manual play area.
           </Text>
         </View>
       </ScrollView>
@@ -312,11 +311,6 @@ const styles = StyleSheet.create({
   historyItem: {
     fontSize: 13,
     fontFamily: 'monospace',
-  },
-  unavailableText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#B00020',
   },
   modalBackdrop: {
     flex: 1,

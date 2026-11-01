@@ -3,7 +3,7 @@ import { ChessGame } from './ChessGame.ts';
 // A replaceable chess-analysis interface. The Study UI depends on this
 // interface, not on any concrete engine implementation.
 
-export type EngineName = 'heuristic-v1';
+export type EngineName = 'heuristic-v1' | 'chal-2.0.0';
 
 export interface EngineMove {
   from: string;
@@ -36,6 +36,12 @@ export interface EngineAnalysisResult {
   positionsEvaluated: number;
   depth: number;
   engine: EngineName;
+  /**
+   * Mate distance in moves from the side-to-move perspective when the engine
+   * reports a forced mate. Positive means the side to move can mate; negative
+   * means the side to move is being mated. Null or undefined when unavailable.
+   */
+  mate?: number | null;
   /** Legacy alias for backward compatibility */
   nodes: number;
 }
@@ -244,6 +250,7 @@ export class HeuristicChessEngine implements ChessEngine {
         nodes: 1,
         depth: 0,
         engine: 'heuristic-v1',
+        mate: rootTerminal === 'checkmate' ? 0 : null,
       };
     }
 
@@ -385,6 +392,7 @@ export class HeuristicChessEngine implements ChessEngine {
       nodes: positionsEvaluated,
       depth: 2,
       engine: 'heuristic-v1',
+      mate: bestScore >= MATE_SCORE ? 1 : bestScore <= -MATE_SCORE ? -1 : null,
     };
   }
 }

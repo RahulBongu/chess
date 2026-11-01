@@ -4,7 +4,7 @@ Android-first mobile app for analyzing and navigating a physical chess game.
 
 ## Current milestone
 
-Milestone 3.6: inner-board detection. The app includes a playable local chessboard, user-initiated camera calibration, and local OpenCV board detection that checks both the outer boundary and an alternating 8 × 8 square pattern. Detection now handles boards whose detected outline includes a border or surrounding edge and searches finer inward sampling scales plus minimum-area-rectangle candidates. Stockfish analysis, piece recognition, voice instructions, and backend services are not implemented.
+Milestone 3.7: offline Chal v2.0.0 engine integration. The app includes a playable local chessboard, user-initiated camera calibration, local OpenCV board detection (boundary and 8 × 8 pattern verification), and offline chess analysis in Board Study powered by an embedded MIT-licensed Chal v2.0.0 native engine (tag 2.0.0, commit c5410b5, embedded 49,346-byte NNUE weights) on Android ARM64. A 2-ply heuristic fallback is retained with full UI disclosure when the native engine is unavailable. Piece recognition, voice instructions, and backend services are not implemented.
 
 ## Technology stack
 
@@ -15,6 +15,7 @@ Milestone 3.6: inner-board detection. The app includes a playable local chessboa
 - Expo Router
 - `expo-camera` with local OpenCV board-boundary detection
 - `expo-file-system` for temporary capture cleanup
+- In-process native JNI module `chal-engine` embedding Chal v2.0.0 (C11/C++20, Android NDK CMake) with embedded NNUE evaluation
 - pnpm
 - chess.js 1.4
 
@@ -109,6 +110,18 @@ npx expo-doctor
 - `src/vision/` — OpenCV board detection, boundary and 8 × 8 pattern evidence, scoring, and coordinate normalization
 - `tests/` — focused chess, calibration, camera-availability, and vision tests
 
+## Milestone 3.7 additions
+
+- Upgraded offline analysis in Board Study from the 2-ply TypeScript heuristic to the MIT-licensed Chal v2.0.0 native chess engine on Android ARM64.
+- Embedded Chal v2.0.0 (commit `c5410b5`) with embedded 49,346-byte NNUE weights (`src/net.h`) into an in-process JNI shared library (`libchal-engine.so`).
+- Implemented C11 atomic search cancellation (`chal_request_stop`, `chal_is_stopped`, `chal_reset_stop`) and monotonic search sequence IDs in `chal_bridge.cpp` to prevent stop-flag race conditions.
+- Serialized search execution with `std::try_to_lock` to guarantee at most one active search and safe teardown without freeing native state during an in-flight search.
+- Added strict FEN validation in the bridge before passing positions to upstream `parse_fen`.
+- Created `ChalChessEngine` adapter implementing the `ChessEngine` interface with UCI PV-to-SAN conversion, mate-distance reporting, and illegal-move filtering.
+- Implemented `createDefaultEngine` in `src/chess/engineSelection.ts` with explicit heuristic fallback disclosure.
+- Verified native runtime on physical device (vivo V2336, Android 16) with 69 assertions, sub-millisecond cancellation (median 152 µs), and safe teardown under load.
+- Packaged into an offline release APK with zero network permissions (`android.permission.INTERNET` blocked).
+
 ## Milestone 3.6 additions
 
 - Added finer inward sampling scales from 1.00 to 0.80 so small symmetric borders can align with the 8 × 8 grid.
@@ -158,6 +171,15 @@ npx expo-doctor
 - In-memory calibration state only; captured images are not saved to the gallery or uploaded
 - Normalized preview coordinates: origin at top-left, x right, y down, range 0 to 1
 
+## Offline chess analysis (Chal v2.0.0 & Heuristic Fallback)
+
+Board Study (`src/app/study.tsx`) provides offline position analysis for imported FEN and PGN games:
+
+- **Embedded Native Engine (Chal v2.0.0):** Powered by an in-process JNI shared library (`libchal-engine.so`, 144,152 bytes) built from the MIT-licensed Chal v2.0.0 engine (commit `c5410b5`, released 2026-09-08). It includes embedded 49,346-byte NNUE evaluation weights in `src/net.h` with zero external file or network dependencies.
+- **Native Synchronization and Cancellation:** Uses C11 atomics (`atomic_int time_over_flag`) with acquire/release semantics in the engine loop. The JNI bridge serializes all search invocations with a mutex (`std::try_to_lock`), protects flag resets with monotonic search sequence IDs, and guarantees safe teardown without freeing native state while a search thread is active.
+- **Explicit Fallback Disclosure:** When the native library is unavailable (such as during web development or in environments without native binary support), the app automatically falls back to `HeuristicChessEngine` (2-ply depth) and surfaces a clear UI banner disclosing the fallback.
+- **Verification and Artifacts:** The native integration was verified on physical hardware (vivo V2336, Android 16 ARM64) across 69 runtime assertions covering engine accuracy, cancellation latency (median 152 µs), active teardown safety, and memory stability. Details, hashes, and reproduction steps are documented in [`modules/chal-engine/verification/README.md`](modules/chal-engine/verification/README.md).
+
 ## Features implemented
 
 - Full 64-square board with White at the bottom
@@ -169,7 +191,9 @@ npx expo-doctor
 - Captures, check, checkmate, stalemate, castling, en passant, and promotion
 - Undo and Restart controls
 - Terminal-position handling
-- Analysis panel marked unavailable until Stockfish is integrated
+- Board Study offline FEN and PGN import with move-by-move navigation
+- On-device offline chess analysis powered by Chal v2.0.0 with embedded NNUE evaluation
+- Explicit 2-ply heuristic analysis fallback with UI disclosure
 - Camera / Board Setup with live preview, manual four-corner calibration, and local OpenCV board detection
 - Temporary capture cleanup after retake, confirmation, or leaving the workflow
 - Opt-in offline test build with INTERNET and unused permissions blocked
@@ -179,7 +203,8 @@ npx expo-doctor
 - Board detection identifies the outer board boundary and verifies a plausible 8 × 8 alternating-square pattern; it does not recognize pieces or verify that the pattern is a regulation chessboard.
 - A strong non-board checker pattern (for example a checkerboard tablecloth or printed calibration target) can still pass. The detector cannot distinguish those from a chessboard using boundary and square evidence alone.
 - Heavy glare, deep shadows, severe perspective, occlusion that covers square corners, or a thick decorative border inside the detected outline can weaken pattern evidence and cause a retry request. The detection score is a quality heuristic, not a calibrated probability.
-- No Stockfish analysis or move suggestions.
+- Chal engine search is serialized to a single concurrent active search in-process.
+- No piece recognition from camera frames; positions are imported via FEN or PGN in Board Study or played on the local board.
 - No voice instructions.
 - No backend, accounts, payments, analytics, telemetry, or remote storage.
 - Release builds use the local debug keystore and are for personal device testing only; do not distribute them.

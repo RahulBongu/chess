@@ -12,8 +12,27 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ChessBoard } from '@/components/ChessBoard';
 import { ChessGame, type ChessSquare } from '@/chess';
-import { createHeuristicEngine, type EngineAnalysisResult } from '@/chess/engine';
+import type { EngineAnalysisResult } from '@/chess/engine';
+import { createDefaultEngine, type EngineSelection } from '@/chess/engineSelection';
 import { importStudyInput, type StudyPosition } from '@/study/studyGame';
+
+function formatEvaluation(result: EngineAnalysisResult): string {
+  if (result.terminal === 'checkmate') {
+    return 'Checkmate';
+  }
+  if (result.terminal === 'stalemate') {
+    return 'Stalemate';
+  }
+  if (result.terminal === 'draw') {
+    return 'Draw';
+  }
+  if (result.mate !== null && result.mate !== undefined) {
+    return result.mate > 0
+      ? `Mate in ${result.mate}`
+      : `Mated in ${Math.abs(result.mate)}`;
+  }
+  return `${result.score} centipawns`;
+}
 
 export default function StudyScreen() {
   const { width } = useWindowDimensions();
@@ -23,7 +42,7 @@ export default function StudyScreen() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [moves, setMoves] = useState<string[]>([]);
 
-  const engineRef = useRef(createHeuristicEngine());
+  const [engineSelection] = useState<EngineSelection>(() => createDefaultEngine());
   const analysisTokenRef = useRef(0);
   const [analysis, setAnalysis] = useState<EngineAnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -65,7 +84,7 @@ export default function StudyScreen() {
     setAnalysisError(null);
 
     try {
-      const result = await engineRef.current.analyze(current.fen);
+      const result = await engineSelection.engine.analyze(current.fen);
       if (token !== analysisTokenRef.current) {
         return;
       }
@@ -86,16 +105,16 @@ export default function StudyScreen() {
   const game = current ? new ChessGame(current.fen) : null;
 
   useEffect(() => {
-    engineRef.current.stop();
+    engineSelection.engine.stop();
     setAnalysis(null);
     setAnalysisError(null);
-  }, [currentIndex, positions]);
+  }, [currentIndex, positions, engineSelection]);
 
   useEffect(() => {
     return () => {
-      engineRef.current.stop();
+      engineSelection.engine.stop();
     };
-  }, []);
+  }, [engineSelection]);
 
   const canGoBack = currentIndex > 0;
   const canGoForward = currentIndex < positions.length - 1;
@@ -107,6 +126,21 @@ export default function StudyScreen() {
         <Text style={styles.body}>
           Paste a FEN position or PGN game. Everything is parsed locally and offline.
         </Text>
+
+        <View style={styles.engineCard}>
+          <Text style={styles.engineName}>
+            {engineSelection.engineName === 'chal-2.0.0'
+              ? 'Engine: Chal 2.0.0 (embedded NNUE)'
+              : 'Engine: Heuristic v1 (2-ply)'}
+          </Text>
+          {engineSelection.fallbackReason ? (
+            <Text style={styles.fallbackText}>{engineSelection.fallbackReason}</Text>
+          ) : (
+            <Text style={styles.engineDetail}>
+              Runs in-process on this device. No network access is used.
+            </Text>
+          )}
+        </View>
 
         <TextInput
           style={styles.input}
@@ -142,23 +176,29 @@ export default function StudyScreen() {
 
         {analysis ? (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Heuristic suggestion — preliminary analysis</Text>
+            <Text style={styles.cardTitle}>
+              {analysis.engine === 'chal-2.0.0'
+                ? 'Chal 2.0.0 suggestion'
+                : 'Heuristic fallback suggestion'}
+            </Text>
             <Text style={styles.body}>
               {analysis.bestMove
                 ? `Suggested move: ${analysis.bestMove.san} (${analysis.bestMove.from} to ${analysis.bestMove.to})`
                 : 'No legal move available.'}
             </Text>
             <Text style={styles.body}>
-              Evaluation: {analysis.score} centipawns ({analysis.perspective}) · depth {analysis.depth} · positions evaluated {analysis.positionsEvaluated ?? analysis.nodes}
+              Evaluation: {formatEvaluation(analysis)} ({analysis.perspective}) · depth {analysis.depth} · positions evaluated {analysis.positionsEvaluated ?? analysis.nodes}
             </Text>
-            {analysis.pv.length > 1 ? (
+            {analysis.pv.length > 0 ? (
               <Text style={styles.body}>Predicted line: {analysis.pv.join(' ')}</Text>
             ) : null}
             {analysis.terminal !== 'none' ? (
               <Text style={styles.body}>Terminal: {analysis.terminal}</Text>
             ) : null}
             <Text style={styles.body}>
-              This is a shallow heuristic prototype, not Stockfish and not grandmaster-strength analysis.
+              {analysis.engine === 'chal-2.0.0'
+                ? 'Computed on-device by Chal 2.0.0 with embedded NNUE. No network access is used.'
+                : 'Heuristic fallback: evaluates one reply per side and is not grandmaster-strength analysis.'}
             </Text>
           </View>
         ) : null}
@@ -240,6 +280,17 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
   },
   boardWrapper: { width: '100%', alignItems: 'center' },
+  engineCard: {
+    width: '100%',
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: '#EAF1F8',
+    gap: 4,
+    alignItems: 'center',
+  },
+  engineName: { fontSize: 14, fontWeight: '700', textAlign: 'center' },
+  engineDetail: { fontSize: 12, textAlign: 'center', opacity: 0.75 },
+  fallbackText: { fontSize: 12, textAlign: 'center', color: '#8A4B00', fontWeight: '600' },
   controls: { width: '100%', flexDirection: 'row', gap: 8, justifyContent: 'center', flexWrap: 'wrap' },
   primaryButton: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 10, backgroundColor: '#208AEF', minWidth: 120, alignItems: 'center' },
   secondaryButton: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 10, backgroundColor: '#6C757D', minWidth: 90, alignItems: 'center' },
