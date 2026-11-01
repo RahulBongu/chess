@@ -13,6 +13,12 @@ import {
 } from '../src/vision/classifyPiece.ts';
 import type { AnyImageData } from '../src/vision/classifySquare.ts';
 import type { PieceClassifierModel, PieceType } from '../src/vision/types.ts';
+import {
+  defaultPieceClassifierModel,
+  getDefaultPieceClassifierModel,
+  PIECE_CLASSES,
+  PIECE_MODEL_VERSION,
+} from '../src/vision/pieceModelWeights.ts';
 
 /**
  * Creates a synthetic uniform or patterned grayscale image buffer for testing.
@@ -268,5 +274,122 @@ describe('offline chess piece HOG feature extraction and classification', () => 
       checkPieceInvariantConflict('a1', 'pawn', 'white').reason ?? '',
       /white pawn cannot exist on rank 1/,
     );
+  });
+
+  it('10. Python/TypeScript HOG feature numerical parity on fixed synthetic patch', () => {
+    // Fixed deterministic synthetic patch: 64x64 with vertical bar and diagonal slash
+    const patch = createSyntheticPatch(64, 64, 200);
+    for (let y = 12; y < 52; y += 1) {
+      for (let x = 28; x < 36; x += 1) {
+        patch.data[y * 64 + x] = 40;
+      }
+    }
+    for (let i = 0; i < 16; i += 1) {
+      patch.data[(20 + i) * 64 + (36 + i)] = 40;
+    }
+
+    const tsHog = extractPieceHogFeatures(patch);
+    assert.equal(tsHog.length, 288);
+
+    // Reference values extracted from scripts/train_piece_classifier.py extract_hog_288
+    const expectedIndicesAndValues: [number, number][] = [
+      [0, 0.000000],
+      [8, 0.208792],
+      [16, 0.000000],
+      [32, 0.127084],
+      [64, 0.160086],
+      [128, 0.457891],
+      [200, 0.954480],
+      [256, 0.923760],
+    ];
+
+    for (const [idx, expectedVal] of expectedIndicesAndValues) {
+      const diff = Math.abs(tsHog[idx] - expectedVal);
+      assert.ok(
+        diff < 1e-5,
+        `Feature index ${idx} value ${tsHog[idx].toFixed(6)} diverges from Python reference ${expectedVal.toFixed(6)} (diff ${diff})`,
+      );
+    }
+  });
+
+  it('11. Exported defaultPieceClassifierModel structural and mathematical integrity', () => {
+    const model = getDefaultPieceClassifierModel();
+    assert.ok(model, 'defaultPieceClassifierModel must be defined');
+    assert.equal(model, defaultPieceClassifierModel);
+
+    // Validate structural schema
+    assert.doesNotThrow(() => validatePieceClassifierModel(model));
+
+    assert.equal(model.name, 'hog-staunton-micro-v1');
+    assert.equal(model.version, PIECE_MODEL_VERSION);
+    assert.equal(model.featureDimension, 288);
+    assert.deepEqual(model.classes, ['pawn', 'knight', 'bishop', 'rook', 'queen', 'king']);
+    assert.equal(model.weights.length, 6);
+    for (let c = 0; c < 6; c += 1) {
+      assert.equal(model.weights[c].length, 288);
+      // Ensure weights are real trained floating point values (not zeros or dummy numbers)
+      const hasNonZero = model.weights[c].some((w) => Math.abs(w) > 1e-4);
+      assert.ok(hasNonZero, `Class ${c} (${model.classes[c]}) must have trained non-zero weights`);
+    }
+    assert.equal(model.biases.length, 6);
+
+    // Verify metadata provenance disclosures
+    assert.ok(model.metadata);
+    assert.equal(model.metadata?.license, 'MIT');
+    assert.equal(model.metadata?.evaluationType, 'SYNTHETIC-ONLY');
+    assert.equal(model.metadata?.trainDenominator, 1080);
+    assert.equal(model.metadata?.testDenominator, 360);
+    assert.ok((model.metadata?.top1Accuracy ?? 0) > 0.95);
+    assert.ok((model.metadata?.top2Accuracy ?? 0) >= 0.99);
+  });
+
+  it('12. End-to-end inference with exported defaultPieceClassifierModel', () => {
+    const model = getDefaultPieceClassifierModel();
+
+    // Create a pawn-like synthetic patch (small spherical head + conical stem)
+    const pawnPatch = createSyntheticPatch(64, 64, 215);
+    // Draw base
+    for (let y = 50; y <= 58; y += 1) {
+      for (let x = 20; x <= 44; x += 1) {
+        pawnPatch.data[y * 64 + x] = 40;
+      }
+    }
+    // Draw stem
+    for (let y = 28; y < 50; y += 1) {
+      for (let x = 28; x <= 36; x += 1) {
+        pawnPatch.data[y * 64 + x] = 40;
+      }
+    }
+    // Draw round head
+    for (let y = 14; y < 28; y += 1) {
+      for (let x = 25; x <= 39; x += 1) {
+        if ((x - 32) ** 2 + (y - 20) ** 2 <= 7 ** 2) {
+          pawnPatch.data[y * 64 + x] = 40;
+        }
+      }
+    }
+
+    const res = classifyPieceFromPatch(pawnPatch, {
+      model,
+      color: 'white',
+      squareName: 'e4',
+    });
+
+    assert.equal(res.color, 'white');
+    assert.equal(res.candidates.length, 6);
+    assert.ok(res.predictedType !== null);
+
+    // Probabilities must sum to 1.0
+    const probSum = res.candidates.reduce((s, c) => s + c.probability, 0);
+    assert.ok(Math.abs(probSum - 1.0) < 1e-4);
+
+    // Candidates must be ordered descending
+    for (let i = 0; i < 5; i += 1) {
+      assert.ok(res.candidates[i].probability >= res.candidates[i + 1].probability);
+    }
+
+    // Confidence and margin must match definitions
+    assert.equal(res.confidence, res.candidates[0].probability);
+    assert.equal(res.margin, res.candidates[0].probability - res.candidates[1].probability);
   });
 });

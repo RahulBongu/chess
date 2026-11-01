@@ -195,6 +195,11 @@ export interface PieceClassifierModel {
   metadata?: {
     trainedOn?: string;
     license?: string;
+    evaluationType?: string;
+    trainDenominator?: number;
+    testDenominator?: number;
+    top1Accuracy?: number;
+    top2Accuracy?: number;
     metrics?: Record<string, number>;
   };
 }
