@@ -154,6 +154,11 @@ export default function ChessScreen() {
           </Pressable>
           <Pressable
             style={[styles.button, styles.setupButton]}
+            onPress={() => router.push('/study')}>
+            <Text style={styles.buttonText}>Board Study</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.button, styles.setupButton]}
             onPress={() => router.push('/camera-lab')}>
             <Text style={styles.buttonText}>Camera Lab</Text>
           </Pressable>
