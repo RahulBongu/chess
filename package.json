@@ -44,7 +44,7 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types tests/chess.test.ts tests/calibration.test.ts tests/vision.test.ts tests/cameraAvailability.test.ts tests/boardEvidence.test.ts tests/grayscaleFrame.test.ts tests/studyImport.test.ts tests/engine.test.ts tests/chalEngine.test.ts"
+    "test": "node --test --experimental-strip-types tests/chess.test.ts tests/calibration.test.ts tests/vision.test.ts tests/cameraAvailability.test.ts tests/boardEvidence.test.ts tests/grayscaleFrame.test.ts tests/studyImport.test.ts tests/engine.test.ts tests/chalEngine.test.ts tests/rectify.test.ts tests/classifySquare.test.ts tests/fenBuilder.test.ts tests/boardReview.test.ts tests/imageLifecycle.test.ts tests/navigationArchitecture.test.ts"
   },
   "private": true,
   "expo": {

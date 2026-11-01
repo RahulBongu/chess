@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 
-import { LiveCameraView } from '../../modules/live-camera/src';
+import { LiveCameraView } from '../../../modules/live-camera/src';
 
 type LabMode = 'idle' | 'A' | 'B' | 'C';
 

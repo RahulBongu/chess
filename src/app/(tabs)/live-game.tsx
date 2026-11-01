@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 
 import { detectBoardFromGrayscaleFrame } from '@/vision/detectBoard';
-import { LiveCameraView } from '../../modules/live-camera/src';
+import { LiveCameraView } from '../../../modules/live-camera/src';
 import type { DetectedCorner } from '@/vision/types';
 
 function lerp(a: number, b: number, t: number) {

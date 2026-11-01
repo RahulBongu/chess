@@ -1,5 +1,4 @@
 import { CameraView, useCameraPermissions, type CameraMountError } from 'expo-camera';
-import { File } from 'expo-file-system';
 import { Linking } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useRef, useEffect, useState } from 'react';
@@ -14,6 +13,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
+import { deleteCachedCapture } from '@/vision/imageLifecycle';
 import { resolveCameraAvailability } from '@/camera/availability';
 import { detectBoardFromBase64 } from '@/vision/detectBoard';
 import type { CandidateDiagnostic } from '@/vision/types';import { SafeAreaView } from 'react-native-safe-area-context';
@@ -28,24 +28,6 @@ import {
 } from '@/calibration';
 
 const CORNER_LABELS = ['Top-left', 'Top-right', 'Bottom-right', 'Bottom-left'] as const;
-
-function deleteCachedCapture(uri: string | null | undefined): boolean {
-  if (!uri) {
-    return true;
-  }
-
-  try {
-    const file = new File(uri);
-    if (file.exists) {
-      file.delete();
-    }
-    return true;
-  } catch {
-    // Best-effort cleanup. The capture lives in the app-private cache, and the
-    // operating system can also reclaim it later.
-    return false;
-  }
-}
 
 export default function CameraSetupScreen() {
   const { width } = useWindowDimensions();
@@ -75,6 +57,8 @@ export default function CameraSetupScreen() {
   const previewWidth = Math.min(width - 24, 480);
   const previewHeight = Math.round(previewWidth * (4 / 3));
 
+  const isHandedOffRef = useRef(false);
+
   const clearCapturedImage = useCallback((): boolean => {
     const uri = capturedImageUriRef.current;
     capturedImageUriRef.current = null;
@@ -85,6 +69,7 @@ export default function CameraSetupScreen() {
   useFocusEffect(
     useCallback(() => {
       setIsScreenFocused(true);
+      isHandedOffRef.current = false;
 
       return () => {
         // Expo Camera recommends unmounting the preview whenever its screen is
@@ -94,6 +79,12 @@ export default function CameraSetupScreen() {
         setIsScreenFocused(false);
         setCameraReady(false);
         setCameraError(null);
+
+        // If ownership was explicitly transferred to Board Review, do not delete the file!
+        if (isHandedOffRef.current) {
+          isHandedOffRef.current = false;
+          return;
+        }
 
         if (!capturedImageUriRef.current) {
           return;
@@ -332,12 +323,9 @@ export default function CameraSetupScreen() {
     }
 
     setConfirmedPoints(detectedCorners);
-    const cleared = clearCapturedImage();
     setCameraReady(false);
     setStatusMessage(
-      cleared
-        ? 'Calibration accepted from detected board corners. The temporary capture was cleared.'
-        : 'Calibration accepted from detected board corners. The temporary capture may remain in the app cache.',
+      'Calibration accepted from detected board corners. Tap Review & Reconstruct Position to proceed.',
     );
   };
 
@@ -704,8 +692,34 @@ export default function CameraSetupScreen() {
                 {index + 1}. ({point.x.toFixed(3)}, {point.y.toFixed(3)})
               </Text>
             ))}
+            <Pressable
+              style={[styles.primaryButton, { marginTop: 8 }]}
+              onPress={() => {
+                const uriToTransfer = capturedImageUriRef.current ?? capturedImage?.uri;
+                if (uriToTransfer) {
+                  isHandedOffRef.current = true;
+                  capturedImageUriRef.current = null;
+                  setCapturedImage(null);
+                  router.push({
+                    pathname: '/board-review',
+                    params: { imageUri: uriToTransfer },
+                  });
+                } else {
+                  router.push('/board-review');
+                }
+              }}
+              accessibilityRole="button">
+              <Text style={styles.buttonText}>Review & Reconstruct Position</Text>
+            </Pressable>
           </View>
         ) : null}
+
+        <Pressable
+          style={styles.secondaryButton}
+          onPress={() => router.push('/board-review')}
+          accessibilityRole="button">
+          <Text style={styles.secondaryButtonText}>Open Manual Position Review</Text>
+        </Pressable>
 
         <Pressable style={styles.secondaryButton} onPress={handleReturnToBoard} accessibilityRole="button">
           <Text style={styles.secondaryButtonText}>Return to chessboard</Text>

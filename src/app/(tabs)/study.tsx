@@ -1,3 +1,4 @@
+import { useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Pressable,
@@ -15,6 +16,7 @@ import { ChessGame, type ChessSquare } from '@/chess';
 import type { EngineAnalysisResult } from '@/chess/engine';
 import { createDefaultEngine, type EngineSelection } from '@/chess/engineSelection';
 import { importStudyInput, type StudyPosition } from '@/study/studyGame';
+import { handleStudyRouteFen, type StudyRouteState } from '@/study/studyRouteHandler';
 
 function formatEvaluation(result: EngineAnalysisResult): string {
   if (result.terminal === 'checkmate') {
@@ -36,11 +38,38 @@ function formatEvaluation(result: EngineAnalysisResult): string {
 
 export default function StudyScreen() {
   const { width } = useWindowDimensions();
+  const { fen: routeFen } = useLocalSearchParams<{ fen?: string }>();
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [positions, setPositions] = useState<StudyPosition[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [moves, setMoves] = useState<string[]>([]);
+  const lastImportedFenRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!routeFen || typeof routeFen !== 'string') {
+      return;
+    }
+    const currentRouteState: StudyRouteState = {
+      input,
+      positions,
+      moves,
+      currentIndex,
+      error,
+      lastImportedFen: lastImportedFenRef.current,
+    };
+    const { state: nextState, updated } = handleStudyRouteFen(currentRouteState, routeFen);
+    if (updated) {
+      lastImportedFenRef.current = nextState.lastImportedFen;
+      setInput(nextState.input);
+      setError(nextState.error);
+      setPositions(nextState.positions);
+      setMoves(nextState.moves);
+      setCurrentIndex(nextState.currentIndex);
+    } else if (nextState.error && nextState.error !== error) {
+      setError(nextState.error);
+    }
+  }, [routeFen]);
 
   const [engineSelection] = useState<EngineSelection>(() => createDefaultEngine());
   const analysisTokenRef = useRef(0);
