@@ -33,7 +33,11 @@ yarn-error.*
 # local env files
 .env*.local
 
-# typescript
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+
 *.tsbuildinfo
 
 example

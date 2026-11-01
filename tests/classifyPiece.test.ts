@@ -19,6 +19,10 @@ import {
   PIECE_CLASSES,
   PIECE_MODEL_VERSION,
 } from '../src/vision/pieceModelWeights.ts';
+import {
+  experimentalPieceClassifierModel,
+  getExperimentalPieceClassifierModel,
+} from '../src/vision/experimentalPieceModelWeights.ts';
 
 /**
  * Creates a synthetic uniform or patterned grayscale image buffer for testing.
@@ -391,5 +395,75 @@ describe('offline chess piece HOG feature extraction and classification', () => 
     // Confidence and margin must match definitions
     assert.equal(res.confidence, res.candidates[0].probability);
     assert.equal(res.margin, res.candidates[0].probability - res.candidates[1].probability);
+  });
+
+  it('13. Integrity and structure of experimentalPieceClassifierModel (Phase 4.3E candidate)', () => {
+    const expModel = getExperimentalPieceClassifierModel();
+    validatePieceClassifierModel(expModel);
+
+    assert.equal(expModel.featureDimension, 288);
+    assert.equal(expModel.classes.length, 6);
+    assert.equal(expModel.weights.length, 6);
+    assert.equal(expModel.biases.length, 6);
+    for (let c = 0; c < 6; c += 1) {
+      assert.equal(expModel.weights[c].length, 288);
+      const hasNonZero = expModel.weights[c].some((w) => Math.abs(w) > 1e-4);
+      assert.ok(hasNonZero, `Candidate Class ${c} must have non-zero weights`);
+    }
+
+    assert.ok(expModel.metadata);
+    assert.equal(expModel.metadata?.license, 'CC BY 4.0');
+    assert.equal(expModel.metadata?.evaluationType, 'HELD-OUT-PHYSICAL-SET-4');
+    assert.equal(expModel.metadata?.trainDenominator, 4608);
+    assert.equal(expModel.metadata?.testDenominator, 768);
+
+    // Verify production model isolation: defaultPieceClassifierModel remains synthetic
+    const prodModel = getDefaultPieceClassifierModel();
+    assert.equal(prodModel.metadata?.evaluationType, 'SYNTHETIC-ONLY');
+    assert.equal(prodModel.metadata?.license, 'MIT');
+    assert.notEqual(prodModel.version, expModel.version);
+  });
+
+  it('14. Python/TypeScript parity on experimentalPieceClassifierModel inference', () => {
+    // Fixed deterministic test patch matching test 10
+    const patch = createSyntheticPatch(64, 64, 200);
+    for (let y = 12; y < 52; y += 1) {
+      for (let x = 28; x < 36; x += 1) {
+        patch.data[y * 64 + x] = 40;
+      }
+    }
+    for (let i = 0; i < 16; i += 1) {
+      patch.data[(20 + i) * 64 + (36 + i)] = 40;
+    }
+
+    const expModel = getExperimentalPieceClassifierModel();
+    const res = classifyPieceFromPatch(patch, {
+      model: expModel,
+      color: 'white',
+      squareName: 'e4',
+    });
+
+    assert.equal(res.predictedType, 'knight');
+
+    // Expected values from Python reference (evaluate_real_benchmark.py / predict_piece)
+    // Candidate Logits: [0.375428, 7.039955, -2.02584, -3.722581, -3.693206, 2.026261]
+    // Candidate Probs:  [0.001265, 0.991985, 0.000115, 0.000021, 0.000022, 0.006593]
+    const expectedProbs: Record<string, number> = {
+      pawn: 0.001265,
+      knight: 0.991985,
+      bishop: 0.000115,
+      rook: 0.000021,
+      queen: 0.000022,
+      king: 0.006593,
+    };
+
+    for (const cand of res.candidates) {
+      const exp = expectedProbs[cand.type];
+      const diff = Math.abs(cand.probability - exp);
+      assert.ok(
+        diff < 1e-4,
+        `Probability for ${cand.type} (${cand.probability.toFixed(6)}) diverges from Python (${exp.toFixed(6)}) by ${diff}`,
+      );
+    }
   });
 });
