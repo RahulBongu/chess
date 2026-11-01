@@ -96,6 +96,15 @@ export class ChessGame {
     }
   }
 
+  loadPgn(pgn: string): boolean {
+    try {
+      this.chess.loadPgn(pgn);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   history(): string[] {
     return this.chess.history();
   }
