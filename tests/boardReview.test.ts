@@ -8,6 +8,16 @@ import {
   type ChessPieceSymbol,
   type SquareEntry,
 } from '../src/vision/fenBuilder.ts';
+import {
+  recognizeBoardFromRectifiedImage,
+  pieceTypeToSymbol,
+  SYNTHETIC_MODEL_DISCLOSURE,
+} from '../src/vision/recognizeBoard.ts';
+import {
+  computeRectifiedBoardGeometry,
+  CANONICAL_CORNERS,
+} from '../src/vision/rectify.ts';
+import type { AnyImageData } from '../src/vision/classifySquare.ts';
 import { importStudyInput } from '../src/study/studyGame.ts';
 import { handleStudyRouteFen, createInitialStudyRouteState } from '../src/study/studyRouteHandler.ts';
 import { createDefaultEngine } from '../src/chess/engineSelection.ts';
@@ -246,5 +256,84 @@ describe('board review and study handoff integration', () => {
     assert.equal(invalidRes.state.lastImportedFen, fenA, 'Failed import must not change lastImportedFen');
     assert.equal(invalidRes.state.positions[0].fen, fenA, 'Failed import must not corrupt existing positions');
     assert.match(invalidRes.state.error ?? '', /Invalid FEN/);
+  });
+
+  it('maps all 12 piece symbols reliably combining piece type with white/black color', () => {
+    assert.equal(pieceTypeToSymbol('pawn', 'white'), 'P');
+    assert.equal(pieceTypeToSymbol('knight', 'white'), 'N');
+    assert.equal(pieceTypeToSymbol('bishop', 'white'), 'B');
+    assert.equal(pieceTypeToSymbol('rook', 'white'), 'R');
+    assert.equal(pieceTypeToSymbol('queen', 'white'), 'Q');
+    assert.equal(pieceTypeToSymbol('king', 'white'), 'K');
+
+    assert.equal(pieceTypeToSymbol('pawn', 'black'), 'p');
+    assert.equal(pieceTypeToSymbol('knight', 'black'), 'n');
+    assert.equal(pieceTypeToSymbol('bishop', 'black'), 'b');
+    assert.equal(pieceTypeToSymbol('rook', 'black'), 'r');
+    assert.equal(pieceTypeToSymbol('queen', 'black'), 'q');
+    assert.equal(pieceTypeToSymbol('king', 'black'), 'k');
+  });
+
+  it('recognizes 64-square board from synthetic rectified image and respects orientation', () => {
+    // Generate an 800x800 synthetic high-contrast checkerboard
+    const data = new Uint8Array(800 * 800);
+    for (let r = 0; r < 8; r += 1) {
+      for (let c = 0; c < 8; c += 1) {
+        const isLight = (r + c) % 2 === 0;
+        const fill = isLight ? 215 : 60;
+        for (let y = r * 100; y < (r + 1) * 100; y += 1) {
+          for (let x = c * 100; x < (c + 1) * 100; x += 1) {
+            data[y * 800 + x] = fill;
+          }
+        }
+      }
+    }
+
+    const img: AnyImageData = { width: 800, height: 800, data };
+
+    // Case A: White-bottom view
+    const geomWhite = computeRectifiedBoardGeometry(CANONICAL_CORNERS, { view: 'white-bottom' });
+    const resWhite = recognizeBoardFromRectifiedImage(img, geomWhite);
+
+    assert.equal(resWhite.view, 'white-bottom');
+    assert.equal(Object.keys(resWhite.squares).length, 64);
+    assert.equal(resWhite.summary.emptyCount, 64, 'Clean checkerboard without pieces should be 100% empty');
+    assert.equal(resWhite.summary.suggestedCount, 0);
+
+    // Case B: Black-bottom view
+    const geomBlack = computeRectifiedBoardGeometry(CANONICAL_CORNERS, { view: 'black-bottom' });
+    const resBlack = recognizeBoardFromRectifiedImage(img, geomBlack);
+
+    assert.equal(resBlack.view, 'black-bottom');
+    assert.equal(Object.keys(resBlack.squares).length, 64);
+    assert.equal(resBlack.summary.emptyCount, 64);
+
+    // Check disclosure is included
+    assert.equal(resWhite.disclosure, SYNTHETIC_MODEL_DISCLOSURE);
+  });
+
+  it('preserves zero-silent-error: invalid positions are flagged and prevent Study handoff', () => {
+    // Construct a placement where recognition proposed an invalid position:
+    // Two White Kings on the board and White pawn on rank 1!
+    const invalidRecognizedPlacement: Record<string, ChessPieceSymbol | null> = {
+      e1: 'K',
+      d1: 'K', // Second White King!
+      e8: 'k',
+      a1: 'P', // Pawn on rank 1!
+    };
+
+    const fenResult = buildPositionFen(invalidRecognizedPlacement);
+    assert.equal(fenResult.valid, false, 'Structural rule violations must fail validation');
+    assert.equal(fenResult.fen, null, 'Must NOT emit a valid FEN');
+    assert.ok(fenResult.errors.length >= 2);
+    assert.match(fenResult.errors.join('; '), /must have exactly 1|White king/i);
+    assert.match(fenResult.errors.join('; '), /pawns cannot exist on rank 1 or 8/i);
+
+    // Study import must reject invalid FEN
+    assert.equal(importStudyInput(fenResult.fen ?? ''), null);
+  });
+
+  it('safely handles missing image and geometry inputs without throwing unhandled exceptions', () => {
+    assert.throws(() => recognizeBoardFromRectifiedImage(null as any, null as any), /must be provided/);
   });
 });

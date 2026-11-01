@@ -246,6 +246,7 @@ export function classifyPieceFromPatch(
     model: PieceClassifierModel | null | undefined;
     color?: 'white' | 'black' | 'uncertain';
     squareName?: string;
+    roi?: { x: number; y: number; width: number; height: number };
     confidenceThreshold?: number;
     marginThreshold?: number;
     scratchBuffer?: Float32Array;
@@ -254,6 +255,7 @@ export function classifyPieceFromPatch(
   validatePatchImage(patch);
 
   const features = extractPieceHogFeatures(patch, {
+    roi: options.roi,
     scratchBuffer: options.scratchBuffer,
   });
 

@@ -1,6 +1,7 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Image,
   Pressable,
   ScrollView,
@@ -20,7 +21,28 @@ import {
   type FenBuilderResult,
   type SquareEntry,
 } from '@/vision/fenBuilder';
-import type { BoardViewOrientation } from '@/vision/types';
+import {
+  computeRectifiedBoardGeometry,
+  rectifyMat,
+} from '@/vision/rectify';
+import {
+  classifySquareFeatures,
+  type AnyImageData,
+} from '@/vision/classifySquare';
+import {
+  recognizeBoardFromRectifiedImage,
+  SYNTHETIC_MODEL_DISCLOSURE,
+  type BoardRecognitionResult,
+} from '@/vision/recognizeBoard';
+import type { BoardViewOrientation, DetectedCorner } from '@/vision/types';
+
+function getOpenCV(): any | null {
+  try {
+    return require('react-native-fast-opencv');
+  } catch {
+    return null;
+  }
+}
 
 const PIECE_GLYPHS: Record<ChessPieceSymbol, string> = {
   K: '♔',
@@ -58,7 +80,13 @@ const RANKS = ['1', '2', '3', '4', '5', '6', '7', '8'] as const;
 
 export default function BoardReviewScreen() {
   const { width } = useWindowDimensions();
-  const params = useLocalSearchParams<{ imageUri?: string; orientation?: string }>();
+  const params = useLocalSearchParams<{
+    imageUri?: string;
+    corners?: string;
+    imageWidth?: string;
+    imageHeight?: string;
+    orientation?: string;
+  }>();
 
   const [attachedImageUri, setAttachedImageUri] = useState<string | null>(params.imageUri ?? null);
   const ownedImageUriRef = useRef<string | null>(params.imageUri ?? null);
@@ -68,6 +96,10 @@ export default function BoardReviewScreen() {
 
   const [orientation, setOrientation] = useState<BoardViewOrientation>(initialOrientation);
   const [selectedSquare, setSelectedSquare] = useState<string | null>('e4');
+
+  const [recognitionResult, setRecognitionResult] = useState<BoardRecognitionResult | null>(null);
+  const [isRecognizing, setIsRecognizing] = useState(false);
+  const [recognitionStatus, setRecognitionStatus] = useState<string | null>(null);
 
   // Relinquish and delete temporary capture only when the review flow completely unmounts
   useEffect(() => {
@@ -85,6 +117,8 @@ export default function BoardReviewScreen() {
       ownedImageUriRef.current = null;
     }
     setAttachedImageUri(null);
+    setRecognitionResult(null);
+    setRecognitionStatus(null);
   };
 
   // Authoritative 64-square placement state
@@ -100,6 +134,109 @@ export default function BoardReviewScreen() {
 
   // Track which squares have been confirmed by the user
   const [confirmedSquares, setConfirmedSquares] = useState<Set<string>>(new Set());
+
+  // Automatic piece recognition on mount when capture and corners are provided
+  useEffect(() => {
+    let active = true;
+
+    async function runAutoRecognition() {
+      if (!params.imageUri || !params.corners) {
+        return;
+      }
+
+      let parsedCorners: { x: number; y: number }[] = [];
+      try {
+        parsedCorners = JSON.parse(params.corners);
+        if (!Array.isArray(parsedCorners) || parsedCorners.length !== 4) {
+          throw new Error('Expected 4 corner points.');
+        }
+      } catch {
+        if (active) setRecognitionStatus('Board corners unavailable. Manual reconstruction active.');
+        return;
+      }
+
+      setIsRecognizing(true);
+      setRecognitionStatus('Processing image and generating piece suggestions...');
+
+      try {
+        const opencv = getOpenCV();
+        if (!opencv) {
+          if (active) {
+            setRecognitionStatus('OpenCV native module unavailable. Manual placement active.');
+            setIsRecognizing(false);
+          }
+          return;
+        }
+
+        const { File } = require('expo-file-system');
+        const file = new File(params.imageUri);
+        const base64 = await file.base64();
+        if (!base64 || !active) return;
+
+        const { Mat } = opencv;
+        const src = Mat.createFromBase64(base64);
+
+        const pixelCorners: DetectedCorner[] = parsedCorners.map((pt) => ({
+          x: pt.x * src.cols,
+          y: pt.y * src.rows,
+        }));
+
+        const { rectified, release } = rectifyMat(src, pixelCorners, 800);
+
+        try {
+          const buf = rectified.toBuffer('uint8');
+          const isColor = buf.channels === 3;
+          const imgData: AnyImageData = isColor
+            ? { width: 800, height: 800, channels: 3, data: buf.buffer }
+            : { width: 800, height: 800, data: buf.buffer };
+
+          const geometry = computeRectifiedBoardGeometry(pixelCorners, { view: orientation });
+          const result = recognizeBoardFromRectifiedImage(imgData, geometry);
+
+          if (active) {
+            setRecognitionResult(result);
+            setSquares(result.suggestedPlacements);
+            // All suggestions begin UNCONFIRMED to enforce user review
+            setConfirmedSquares(new Set());
+            setRecognitionStatus(
+              `Generated ${result.summary.suggestedCount} piece suggestions. All squares with ? require your confirmation.`,
+            );
+          }
+        } finally {
+          release();
+          src.release();
+        }
+      } catch (err: any) {
+        if (active) {
+          setRecognitionStatus(
+            err instanceof Error
+              ? `Automatic recognition unavailable: ${err.message}. Manual placement active.`
+              : 'Automatic recognition unavailable. Manual placement active.',
+          );
+        }
+      } finally {
+        if (active) {
+          setIsRecognizing(false);
+        }
+      }
+    }
+
+    runAutoRecognition();
+
+    return () => {
+      active = false;
+    };
+  }, [params.imageUri, params.corners, orientation]);
+
+  const handleConfirmAll = () => {
+    const all = new Set<string>();
+    for (const f of FILES) {
+      for (const r of RANKS) {
+        all.add(`${f}${r}`);
+      }
+    }
+    setConfirmedSquares(all);
+  };
 
   // Metadata controls
   const [turn, setTurn] = useState<'w' | 'b'>('w');
@@ -235,7 +372,7 @@ export default function BoardReviewScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>Position Review</Text>
         <Text style={styles.body}>
-          Review and confirm each square. Automatic visual estimates do not assign piece types.
+          Review and confirm each square. Automatic suggestions are generated from camera captures and require your confirmation.
         </Text>
 
         {/* Source image banner or manual mode badge */}
@@ -261,6 +398,20 @@ export default function BoardReviewScreen() {
           </View>
         )}
 
+        {/* Synthetic Model Disclosure & Status Banner */}
+        {attachedImageUri ? (
+          <View style={styles.disclosureCard}>
+            <Text style={styles.disclosureTitle}>Notice: Experimental Piece Recognition</Text>
+            <Text style={styles.disclosureBody}>{SYNTHETIC_MODEL_DISCLOSURE}</Text>
+            {recognitionStatus ? (
+              <View style={styles.recognitionStatusBox}>
+                {isRecognizing ? <ActivityIndicator size="small" color="#2B6CB0" /> : null}
+                <Text style={styles.recognitionStatusText}>{recognitionStatus}</Text>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
         {/* Orientation and Reset Controls */}
         <View style={styles.controlsRow}>
           <Pressable style={styles.secondaryButton} onPress={handleToggleOrientation}>
@@ -274,6 +425,11 @@ export default function BoardReviewScreen() {
           <Pressable style={styles.secondaryButton} onPress={handleLoadStartingPosition}>
             <Text style={styles.secondaryButtonText}>Initial Setup</Text>
           </Pressable>
+          {confirmedSquares.size < 64 ? (
+            <Pressable style={styles.secondaryButton} onPress={handleConfirmAll}>
+              <Text style={styles.secondaryButtonText}>Confirm All</Text>
+            </Pressable>
+          ) : null}
         </View>
 
         {/* Confirmation Stats */}
@@ -334,26 +490,75 @@ export default function BoardReviewScreen() {
           ))}
         </View>
 
+        {/* Selected Square AI Suggestion Details */}
+        {selectedSquare && recognitionResult?.squares[selectedSquare] ? (
+          <View style={styles.suggestionCard}>
+            <Text style={styles.suggestionHeader}>
+              AI Recognition for {selectedSquare.toUpperCase()}:
+            </Text>
+            {(() => {
+              const rec = recognitionResult.squares[selectedSquare];
+              if (rec.occupancy === 'empty') {
+                return (
+                  <Text style={styles.suggestionBody}>
+                    Predicted Empty ({(rec.occupancyConfidence * 100).toFixed(0)}% confidence)
+                  </Text>
+                );
+              }
+              if (rec.suggestedPiece) {
+                const colorLabel = rec.pieceColor === 'white' ? 'White' : 'Black';
+                return (
+                  <>
+                    <Text style={styles.suggestionBody}>
+                      Suggested: {colorLabel} {rec.predictedType} (confidence: {(rec.confidence * 100).toFixed(0)}%, margin: {(rec.margin * 100).toFixed(0)}%)
+                    </Text>
+                    {rec.candidates.length > 1 ? (
+                      <Text style={styles.candidatesText}>
+                        Top candidates: {rec.candidates.slice(0, 3).map((c) => `${c.type} (${(c.probability * 100).toFixed(0)}%)`).join(' · ')}
+                      </Text>
+                    ) : null}
+                  </>
+                );
+              }
+              return (
+                <Text style={styles.suggestionBodyUncertain}>
+                  Status: Ambiguous piece type or color ({rec.reason ?? 'select from palette below'})
+                </Text>
+              );
+            })()}
+          </View>
+        ) : null}
+
         {/* Piece Selection Palette */}
         <View style={styles.paletteContainer}>
           <Text style={styles.sectionHeader}>
             Assign Piece to {selectedSquare ? selectedSquare.toUpperCase() : 'selected square'}:
           </Text>
           <View style={styles.paletteRow}>
-            {PALETTE_OPTIONS.map((item) => (
-              <Pressable
-                key={item.label}
-                style={[
-                  styles.paletteButton,
-                  selectedSquare && squares[selectedSquare] === item.symbol
-                    ? styles.paletteButtonActive
-                    : null,
-                ]}
-                onPress={() => handlePaletteSelect(item.symbol)}>
-                <Text style={styles.paletteGlyph}>{item.glyph}</Text>
-                <Text style={styles.paletteLabel}>{item.label.replace('White ', 'W ').replace('Black ', 'B ')}</Text>
-              </Pressable>
-            ))}
+            {PALETTE_OPTIONS.map((item) => {
+              const isSelected = selectedSquare && squares[selectedSquare] === item.symbol;
+              const isSuggested =
+                selectedSquare &&
+                recognitionResult?.squares[selectedSquare]?.suggestedPiece === item.symbol &&
+                item.symbol !== null;
+
+              return (
+                <Pressable
+                  key={item.label}
+                  style={[
+                    styles.paletteButton,
+                    isSelected ? styles.paletteButtonActive : null,
+                    isSuggested && !isSelected ? styles.paletteButtonSuggested : null,
+                  ]}
+                  onPress={() => handlePaletteSelect(item.symbol)}>
+                  <Text style={styles.paletteGlyph}>{item.glyph}</Text>
+                  <Text style={styles.paletteLabel}>
+                    {item.label.replace('White ', 'W ').replace('Black ', 'B ')}
+                    {isSuggested ? ' ★' : ''}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
 
@@ -619,6 +824,42 @@ const styles = StyleSheet.create({
     backgroundColor: '#E0EEFF',
     borderWidth: 2,
   },
+  paletteButtonSuggested: {
+    borderColor: '#16A34A',
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1.5,
+  },
+  disclosureCard: {
+    width: '100%',
+    backgroundColor: '#FFFBEB',
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    gap: 3,
+  },
+  disclosureTitle: { fontSize: 12, fontWeight: '700', color: '#92400E' },
+  disclosureBody: { fontSize: 11, color: '#78350F' },
+  recognitionStatusBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  recognitionStatusText: { fontSize: 11, fontWeight: '600', color: '#2B6CB0' },
+  suggestionCard: {
+    width: '100%',
+    backgroundColor: '#F0FDF4',
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    gap: 2,
+  },
+  suggestionHeader: { fontSize: 12, fontWeight: '700', color: '#166534' },
+  suggestionBody: { fontSize: 12, color: '#15803D' },
+  suggestionBodyUncertain: { fontSize: 12, color: '#B45309' },
+  candidatesText: { fontSize: 11, color: '#4B5563', fontStyle: 'italic', marginTop: 2 },
   paletteGlyph: { fontSize: 24, color: '#102A43' },
   paletteLabel: { fontSize: 9, color: '#486581', textAlign: 'center' },
   card: {

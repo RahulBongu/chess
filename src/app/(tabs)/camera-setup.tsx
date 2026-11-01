@@ -702,7 +702,12 @@ export default function CameraSetupScreen() {
                   setCapturedImage(null);
                   router.push({
                     pathname: '/board-review',
-                    params: { imageUri: uriToTransfer },
+                    params: {
+                      imageUri: uriToTransfer,
+                      corners: confirmedPoints ? JSON.stringify(confirmedPoints) : undefined,
+                      imageWidth: capturedImage?.width ? String(capturedImage.width) : undefined,
+                      imageHeight: capturedImage?.height ? String(capturedImage.height) : undefined,
+                    },
                   });
                 } else {
                   router.push('/board-review');
