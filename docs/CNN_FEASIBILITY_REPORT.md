@@ -193,3 +193,10 @@ To eventually achieve $\ge 88.0\%$ Top-1 on real physical chess sets:
 1. **Physical Set Diversity Deficit:** Training on only 3 physical sets is mathematically insufficient for neural networks to learn shape invariance across 3D piece carvings. A diverse physical capture dataset covering at least 15–20 distinct tournament, club, and wooden sets under calibrated radial angles is required.
 2. **Hybrid Multi-Stage Pipeline:** Keep Stage 1 (classical background adaptive surface stats) for robust occupancy and color separation.
 3. **No Compromise on Safety:** Continue strictly enforcing the amber `?` confirmation workflow and manual piece editor fail-safe. No unverified neural model will ever silently place pieces on the user's board.
+
+---
+
+## 8. Milestone 5.1 Audit Cross-Reference
+
+For the complete dataset-to-runtime alignment audit, input sampling mathematical trace, and minimal controlled diagnosis verifying that preprocessing differences account for less than $\pm 0.3\%$ variance, see `docs/DATASET_TO_RUNTIME_ALIGNMENT_AUDIT.md`.
+
