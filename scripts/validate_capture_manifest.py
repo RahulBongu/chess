@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+"""
+validate_capture_manifest.py - Milestone 5.2C Offline Manifest Validator
+
+Validates physical capture manifest JSONL files against schema constraints,
+piece instance naming, FEN placement syntax, licensing provenance,
+and strict cross-split leakage prevention.
+
+Usage:
+    python scripts/validate_capture_manifest.py <manifest_file.jsonl>
+"""
+
+import argparse
+import json
+import re
+import sys
+from collections import defaultdict
+from typing import Any, Dict, List, Set, Tuple
+
+SET_ID_REGEX = re.compile(r"^SET[0-9]{2}$")
+PIECE_INSTANCE_REGEX = re.compile(r"^SET[0-9]{2}_[WB]_[PNBRQK][0-9]{2}$")
+SQUARE_REGEX = re.compile(r"^[a-h][1-8]$")
+
+VALID_PIECE_TYPES = {"pawn", "knight", "bishop", "rook", "queen", "king", "empty"}
+VALID_PIECE_COLORS = {"white", "black", "none"}
+VALID_ANGLES = {"zenith", "white_perspective", "black_perspective", "lateral_flank"}
+VALID_LIGHTING = {"diffuse_daylight", "overhead_specular", "directional_oblique"}
+VALID_CROP_TYPES = {"isolated_piece", "empty_square", "full_board_context", "full_board_raw"}
+VALID_OCCLUSIONS = {"none", "partial", "severe"}
+VALID_SPLITS = {"train", "val", "holdout"}
+VALID_PERMISSIONS = {"verified_author_consent", "verified_owner_release"}
+VALID_ANNOTATION_STATUSES = {"verified", "provisional", "unlabeled"}
+
+TYPE_CHAR_MAP = {
+    "pawn": "P",
+    "knight": "N",
+    "bishop": "B",
+    "rook": "R",
+    "queen": "Q",
+    "king": "K",
+    "empty": "E",
+}
+
+
+def get_expected_split(set_id: str) -> str:
+    m = re.match(r"^SET([0-9]{2})$", set_id)
+    if not m:
+        return ""
+    num = int(m.group(1))
+    if 1 <= num <= 14:
+        return "train"
+    if 15 <= num <= 17:
+        return "val"
+    if 18 <= num <= 20:
+        return "holdout"
+    return ""
+
+
+def validate_fen(fen: str) -> bool:
+    if not fen:
+        return False
+    placement = fen.strip().split()[0]
+    ranks = placement.split("/")
+    if len(ranks) != 8:
+        return False
+    for rank in ranks:
+        count = 0
+        for ch in rank:
+            if ch.isdigit():
+                count += int(ch)
+            elif ch in "pnbrqkPNBRQK":
+                count += 1
+            else:
+                return False
+        if count != 8:
+            return False
+    return True
+
+
+def validate_record(r: Dict[str, Any], idx: int) -> List[str]:
+    errors = []
+    prefix = f"[Record #{idx} Set:{r.get('set_id', 'UNKNOWN')} Piece:{r.get('piece_instance_id', 'UNKNOWN')}]"
+
+    # Required fields
+    for field in ["dataset_version", "source_id", "scene_id", "original_image_path", "derived_crop_path"]:
+        if not str(r.get(field, "")).strip():
+            errors.append(f"{prefix} Missing required '{field}'")
+
+    set_id = str(r.get("set_id", ""))
+    if not SET_ID_REGEX.match(set_id):
+        errors.append(f"{prefix} Invalid 'set_id': '{set_id}'. Must match SET01-SET20 format.")
+
+    split = str(r.get("split", ""))
+    if split not in VALID_SPLITS:
+        errors.append(f"{prefix} Invalid 'split': '{split}'. Expected train, val, or holdout.")
+    else:
+        expected = get_expected_split(set_id)
+        if expected and split != expected:
+            errors.append(f"{prefix} Split mismatch for set '{set_id}': assigned '{split}', expected '{expected}'.")
+
+    piece_type = str(r.get("piece_type", ""))
+    piece_color = str(r.get("piece_color", ""))
+    instance_id = str(r.get("piece_instance_id", ""))
+
+    if piece_type not in VALID_PIECE_TYPES:
+        errors.append(f"{prefix} Unknown 'piece_type': '{piece_type}'")
+    if piece_color not in VALID_PIECE_COLORS:
+        errors.append(f"{prefix} Unknown 'piece_color': '{piece_color}'")
+
+    if piece_type == "empty":
+        if piece_color != "none":
+            errors.append(f"{prefix} Empty square must have piece_color 'none', got '{piece_color}'")
+        if instance_id != "EMPTY":
+            errors.append(f"{prefix} Empty square must have piece_instance_id 'EMPTY', got '{instance_id}'")
+    else:
+        if piece_color not in ("white", "black"):
+            errors.append(f"{prefix} Non-empty piece must have piece_color 'white' or 'black', got '{piece_color}'")
+        if not PIECE_INSTANCE_REGEX.match(instance_id):
+            errors.append(f"{prefix} Invalid 'piece_instance_id': '{instance_id}'. Expected format SETxx_W_P01.")
+        else:
+            if instance_id[:5] != set_id:
+                errors.append(f"{prefix} Instance prefix '{instance_id[:5]}' does not match set_id '{set_id}'")
+            expected_color_char = "W" if piece_color == "white" else "B"
+            if instance_id[6] != expected_color_char:
+                errors.append(f"{prefix} Instance color char '{instance_id[6]}' does not match '{piece_color}'")
+            if piece_type in TYPE_CHAR_MAP and instance_id[8] != TYPE_CHAR_MAP[piece_type]:
+                errors.append(f"{prefix} Instance type char '{instance_id[8]}' does not match '{piece_type}'")
+
+    crop_type = str(r.get("crop_type", ""))
+    if crop_type not in VALID_CROP_TYPES:
+        errors.append(f"{prefix} Unknown 'crop_type': '{crop_type}'")
+
+    square = str(r.get("square_coord", ""))
+    if crop_type != "full_board_raw":
+        if not SQUARE_REGEX.match(square):
+            errors.append(f"{prefix} Invalid 'square_coord': '{square}'. Must be a1-h8.")
+
+    if crop_type in ("full_board_context", "full_board_raw"):
+        fen = str(r.get("board_fen", ""))
+        if not validate_fen(fen):
+            errors.append(f"{prefix} Missing or invalid 'board_fen' for full-board crop: '{fen}'")
+
+    if r.get("camera_angle") not in VALID_ANGLES:
+        errors.append(f"{prefix} Unknown 'camera_angle': '{r.get('camera_angle')}'")
+    if r.get("lighting_setup") not in VALID_LIGHTING:
+        errors.append(f"{prefix} Unknown 'lighting_setup': '{r.get('lighting_setup')}'")
+    if r.get("occlusion_level") not in VALID_OCCLUSIONS:
+        errors.append(f"{prefix} Unknown 'occlusion_level': '{r.get('occlusion_level')}'")
+
+    # Licensing & Consent
+    if not str(r.get("photographer", "")).strip():
+        errors.append(f"{prefix} Missing required 'photographer'")
+    if not str(r.get("rights_holder", "")).strip():
+        errors.append(f"{prefix} Missing required 'rights_holder'")
+    if not str(r.get("release_record", "")).strip():
+        errors.append(f"{prefix} Missing required 'release_record'")
+    if r.get("data_license") != "CC0-1.0":
+        errors.append(f"{prefix} Non-compliant 'data_license': '{r.get('data_license')}'. Must be 'CC0-1.0'.")
+    if r.get("code_license") != "MIT":
+        errors.append(f"{prefix} Non-compliant 'code_license': '{r.get('code_license')}'. Must be 'MIT'.")
+    if r.get("permission_status") not in VALID_PERMISSIONS:
+        errors.append(f"{prefix} Invalid 'permission_status': '{r.get('permission_status')}'")
+    if r.get("annotation_status") not in VALID_ANNOTATION_STATUSES:
+        errors.append(f"{prefix} Unknown 'annotation_status': '{r.get('annotation_status')}'")
+
+    return errors
+
+
+def validate_manifest(records: List[Dict[str, Any]]) -> Tuple[bool, List[str], Dict[str, Any]]:
+    errors: List[str] = []
+    sets_seen: Set[str] = set()
+    instances_seen: Set[str] = set()
+    scenes_seen: Set[str] = set()
+    paths_seen: Dict[str, int] = {}
+    set_split_map: Dict[str, str] = {}
+    piece_split_map: Dict[str, str] = {}
+
+    crops_by_type: Dict[str, int] = defaultdict(int)
+    crops_by_split: Dict[str, int] = defaultdict(int)
+
+    if not records:
+        return False, ["Manifest is empty."], {}
+
+    for i, r in enumerate(records):
+        errs = validate_record(r, i)
+        errors.extend(errs)
+
+        set_id = str(r.get("set_id", ""))
+        split = str(r.get("split", ""))
+        instance_id = str(r.get("piece_instance_id", ""))
+        crop_path = str(r.get("derived_crop_path", ""))
+
+        if set_id:
+            sets_seen.add(set_id)
+            if split:
+                if set_id in set_split_map and set_split_map[set_id] != split:
+                    errors.append(
+                        f"[Set Leakage] Set '{set_id}' appears in multiple splits: "
+                        f"'{set_split_map[set_id]}' and '{split}'"
+                    )
+                else:
+                    set_split_map[set_id] = split
+
+        if instance_id and instance_id != "EMPTY":
+            instances_seen.add(instance_id)
+            if split:
+                if instance_id in piece_split_map and piece_split_map[instance_id] != split:
+                    errors.append(
+                        f"[Piece Leakage] Piece '{instance_id}' appears in multiple splits: "
+                        f"'{piece_split_map[instance_id]}' and '{split}'"
+                    )
+                else:
+                    piece_split_map[instance_id] = split
+
+        if crop_path:
+            if crop_path in paths_seen:
+                errors.append(
+                    f"[Duplicate Path] Derived crop path '{crop_path}' appears in records #{paths_seen[crop_path]} and #{i}"
+                )
+            else:
+                paths_seen[crop_path] = i
+
+        if r.get("scene_id"):
+            scenes_seen.add(str(r["scene_id"]))
+        if r.get("crop_type"):
+            crops_by_type[str(r["crop_type"])] += 1
+        if split:
+            crops_by_split[split] += 1
+
+    summary = {
+        "total_records": len(records),
+        "distinct_sets": sorted(list(sets_seen)),
+        "distinct_piece_instances": sorted(list(instances_seen)),
+        "distinct_scenes": sorted(list(scenes_seen)),
+        "crops_by_type": dict(crops_by_type),
+        "crops_by_split": dict(crops_by_split),
+        "set_split_map": set_split_map,
+    }
+    return len(errors) == 0, errors, summary
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Validate physical capture manifest JSONL.")
+    parser.add_argument("manifest_path", help="Path to manifest JSONL file.")
+    args = parser.parse_args()
+
+    records = []
+    with open(args.manifest_path, "r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                print(f"Error parsing JSON on line {line_no}: {e}", file=sys.stderr)
+                sys.exit(1)
+
+    valid, errors, summary = validate_manifest(records)
+
+    print("================================================================================")
+    print("PHYSICAL CHESS CAPTURE MANIFEST VALIDATION REPORT")
+    print("================================================================================")
+    print(f"Total Records:             {summary.get('total_records', 0)}")
+    print(f"Distinct Physical Sets:    {len(summary.get('distinct_sets', []))} {summary.get('distinct_sets', [])}")
+    print(f"Distinct Piece Instances:  {len(summary.get('distinct_piece_instances', []))}")
+    print(f"Distinct Scenes:           {len(summary.get('distinct_scenes', []))}")
+    print("Crops by Type:")
+    for ct, count in summary.get("crops_by_type", {}).items():
+        print(f"  - {ct:<24}: {count}")
+    print("Crops by Split:")
+    for sp, count in summary.get("crops_by_split", {}).items():
+        print(f"  - {sp:<24}: {count}")
+    print("--------------------------------------------------------------------------------")
+
+    if valid:
+        print("GATE STATUS: PASS (Zero errors detected. 100% leak-free and compliant.)")
+        print("================================================================================")
+        sys.exit(0)
+    else:
+        print(f"GATE STATUS: FAIL ({len(errors)} errors detected)")
+        print("--------------------------------------------------------------------------------")
+        for err in errors[:25]:
+            print(f"  ERROR: {err}")
+        if len(errors) > 25:
+            print(f"  ... and {len(errors) - 25} additional errors.")
+        print("================================================================================")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
