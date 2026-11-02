@@ -1,9 +1,9 @@
 # Physical Capture Protocol — Set 01 Preflight and Pilot Execution
 
-**Milestone:** 5.2H  
+**Milestone:** 5.2I  
 **Date:** 2026-11-02  
 **Target repository:** `https://github.com/RahulBongu/chess.git`  
-**Starting commit:** `1ae5f50` (verified synchronized with `origin/main`)  
+**Starting commit:** `7885e3d` (verified synchronized with `origin/main`)  
 **Production model weights:** `src/vision/pieceModelWeights.ts` (version `1.0.0-synthetic-staunton-v1`, strictly **UNCHANGED**)  
 **Preserved release artifacts:** all 35 files under `dist/`, including `dist/ai-chess-navigator-1.0.0-arm64-milestone51b-bgr-validation-20261101.apk`
 
@@ -18,9 +18,13 @@ Milestones 4.3D–5.2G established why an in-house physical dataset is required:
 3. Public datasets either lack commercial redistribution rights, lack public archives, or contain only one physical board.
 4. Canonical manifest IDs and physical underside tags were reconciled in Milestone 5.2F.
 
-Milestone 5.2H audited the extraction code itself. The audit found that the 5.2G extractor emitted 64 crops for every source image, including single-piece sweeps and references; the Python CLI also silently resized non-canonical inputs and hard-coded same-type pieces to instance `01`. Those behaviours were corrected with three explicit modes. The genuine physical pilot remains **PENDING** because no physical photographs exist yet.
+Milestone 5.2H audited the extraction code itself. The audit found that the 5.2G extractor emitted 64 crops for every source image, including single-piece sweeps and references; the Python CLI also silently resized non-canonical inputs and hard-coded same-type pieces to instance `01`. Those behaviours were corrected with three explicit modes.
 
-> A passing synthetic software test is not a physical pilot result. No photographs, crops, or evidence for Set 01 were fabricated in this milestone.
+Milestone 5.2I acquired external real-image datasets (FENiT / Mendeley wpp9xnbcp6 v1 and Zenodo 6656212) outside Git and built an observation-only benchmark adapter (`scripts/external_benchmark_adapter.py`) to smoke-test perspective rectification and piece classification on real photographs without contaminating in-house partitions (full details in [`docs/EXTERNAL_DATASET_BENCHMARK.md`](EXTERNAL_DATASET_BENCHMARK.md)).
+
+The genuine physical pilot remains **PENDING** because no physical photographs exist yet. Public datasets provide valuable smoke tests, but they do not replace the planned capture of 20 independently identified physical sets.
+
+> A passing synthetic software test or external benchmark run is not a physical pilot result. No photographs, crops, or evidence for Set 01 were fabricated in this milestone. Set 01 physical capture remains **PENDING**.
 
 ---
 

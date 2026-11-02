@@ -22,6 +22,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import extract_square_crops as extractor  # noqa: E402
 import validate_capture_manifest as validator  # noqa: E402
+import external_benchmark_adapter as adapter  # noqa: E402
 
 START_PLACEMENT = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 START_FEN = f"{START_PLACEMENT} w KQkq - 0 1"
@@ -334,6 +335,92 @@ class CapturePipelineSyntheticTests(unittest.TestCase):
         valid, errors, _ = validator.validate_manifest(records, check_files=True)
         self.assertFalse(valid)
         self.assertTrue(any("[Missing File]" in error for error in errors))
+
+    def test_external_adapter_parses_placement_formats(self):
+        # 1. Underscore separator with side marker
+        p1 = adapter.parse_fenit_placement("1k1r3r_7p_p1p1Rp2_1pbp3b_5P1P_6PB_PPP5_RK6 w")
+        self.assertEqual(p1, "1k1r3r/7p/p1p1Rp2/1pbp3b/5P1P/6PB/PPP5/RK6")
+
+        # 2. Hyphen separator
+        p2 = adapter.parse_fenit_placement("2b5-4kp2-p6p-2Np1P2-PP1Nn1p1-6P1-7P-4K3")
+        self.assertEqual(p2, "2b5/4kp2/p6p/2Np1P2/PP1Nn1p1/6P1/7P/4K3")
+
+        # 3. Trailing '(full board)'
+        p3 = adapter.parse_fenit_placement("rnbqkbnr_pppppppp_8_8_8_8_PPPPPPPP_RNBQKBNR (full board)")
+        self.assertEqual(p3, START_PLACEMENT)
+
+        # 4. Ineligible: timestamp stem
+        self.assertIsNone(adapter.parse_fenit_placement("20260219_220620"))
+
+        # 5. Ineligible: single piece stem
+        self.assertIsNone(adapter.parse_fenit_placement("B"))
+        self.assertIsNone(adapter.parse_fenit_placement("K"))
+
+    def test_external_adapter_detects_non_convex_corners(self):
+        # Strictly convex quadrilateral
+        convex = np.array([[0.1, 0.1], [0.9, 0.1], [0.8, 0.8], [0.15, 0.85]], dtype=np.float32)
+        self.assertTrue(adapter.is_strictly_convex(convex))
+
+        # Bowtie / self-intersecting quadrilateral
+        bowtie = np.array([[0.1, 0.1], [0.8, 0.8], [0.9, 0.1], [0.15, 0.85]], dtype=np.float32)
+        self.assertFalse(adapter.is_strictly_convex(bowtie))
+
+    def test_external_adapter_emits_observation_records_without_physical_identities(self):
+        # Create a mock 1000x1000 board image
+        img_path = self.write_synthetic_image("fenit_mock_board.png", size=1000)
+        ann_path = self.raw_dir / "fenit_mock_board.txt"
+
+        # Annotation: Board line with 4 corners (0.1, 0.1) -> (0.9, 0.1) -> (0.9, 0.9) -> (0.1, 0.9)
+        # and two piece lines: White King at center e1, Black King at e8
+        ann_lines = [
+            "0 0.5 0.5 0.8 0.8 0.1 0.1 2 0.9 0.1 2 0.9 0.9 2 0.1 0.9 2",
+            "1 0.55 0.85 0.05 0.08 0.55 0.85 2 0.55 0.85 2 0.55 0.85 2 0.55 0.85 2",
+            "4 0.55 0.15 0.05 0.08 0.55 0.15 2 0.55 0.15 2 0.55 0.15 2 0.55 0.15 2",
+        ]
+        ann_path.write_text("\n".join(ann_lines), encoding="utf-8")
+
+        # Mock image name encoding FEN placement
+        mock_placement_stem = "4k3_8_8_8_8_8_8_4K3"
+        mock_img_path = self.raw_dir / f"{mock_placement_stem}.png"
+        os.rename(img_path, mock_img_path)
+        mock_ann_path = self.raw_dir / f"{mock_placement_stem}.txt"
+        os.rename(ann_path, mock_ann_path)
+
+        out_dir = self.root / "external_benchmark_out"
+        rec = adapter.process_external_image(
+            mock_img_path, mock_ann_path, out_dir, W_model=None, b_model=None, temp_model=1.0
+        )
+
+        self.assertEqual(rec["status"], "PROCESSED")
+        self.assertEqual(rec["dataset"], "FENiT_v1")
+        self.assertEqual(rec["derived_crops_count"], 64)
+        self.assertTrue(os.path.isfile(rec["rectified_board_path"]))
+
+        # Invariant 1: No SETxx physical piece IDs or physical tag IDs in external records
+        self.assertNotIn("piece_instance_id", rec)
+        self.assertNotIn("physical_tag_id", rec)
+        self.assertNotIn("set_id", rec)
+
+        # Invariant 2: Crops have crop_type "external_observation" and no physical tags
+        for crop in rec["crops"]:
+            self.assertEqual(crop["crop_type"], "external_observation")
+            self.assertNotIn("piece_instance_id", crop)
+            self.assertNotIn("physical_tag_id", crop)
+            self.assertTrue(os.path.isfile(crop["crop_path"]))
+
+    def test_external_adapter_skips_timestamp_images_cleanly(self):
+        img_path = self.write_synthetic_image("20260219_220620.jpg", size=1000)
+        ann_path = self.raw_dir / "20260219_220620.txt"
+        ann_path.write_text("0 0.5 0.5 0.8 0.8 0.1 0.1 2 0.9 0.1 2 0.9 0.9 2 0.1 0.9 2\n", encoding="utf-8")
+
+        out_dir = self.root / "external_benchmark_out"
+        rec = adapter.process_external_image(
+            img_path, ann_path, out_dir, W_model=None, b_model=None, temp_model=1.0
+        )
+
+        self.assertEqual(rec["status"], "SKIPPED")
+        self.assertEqual(rec["reason"], "timestamp_named_no_ground_truth_fen")
+
 
 
 if __name__ == "__main__":
