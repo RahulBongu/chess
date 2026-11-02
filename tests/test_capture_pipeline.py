@@ -485,6 +485,49 @@ class CapturePipelineSyntheticTests(unittest.TestCase):
         self.assertEqual(rec["status"], "SKIPPED")
         self.assertEqual(rec["reason"], "timestamp_named_no_ground_truth_fen")
 
+    def test_orientation_agreement_accounting_and_symmetry(self):
+        # 1. Standard asymmetric board: White King at e1, Black King at e8
+        grid_asym = adapter.fen_to_grid("4k3/8/8/8/8/8/8/4K3")
+        corners = np.array([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], dtype=np.float32)
+        pieces_asym = [
+            {"cx": 0.55, "cy": 0.85, "info": {"char": "K"}},  # e1 (near row 7, col 4)
+            {"cx": 0.55, "cy": 0.15, "info": {"char": "k"}},  # e8 (near row 0, col 4)
+        ]
+        _, ori_name, score, matches, is_tied, best_shifts = adapter.resolve_board_orientation(
+            corners, pieces_asym, grid_asym, (1000, 1000)
+        )
+        self.assertEqual(ori_name, "white_perspective")
+        self.assertEqual(matches, 2)
+        self.assertEqual(score, 1.0)
+        self.assertFalse(is_tied)
+        self.assertEqual(best_shifts, [0])  # Unique strict winner
+
+        # 2. 180-degree rotationally symmetric board:
+        # e.g., Black King on a8, Black King on h1 (diametrically opposite matching piece symbols)
+        grid_sym = adapter.fen_to_grid("k7/8/8/8/8/8/8/7k")
+        pieces_sym = [
+            {"cx": 0.15, "cy": 0.15, "info": {"char": "k"}},  # a8
+            {"cx": 0.85, "cy": 0.85, "info": {"char": "k"}},  # h1
+        ]
+        _, _, score_sym, matches_sym, is_tied_sym, best_shifts_sym = adapter.resolve_board_orientation(
+            corners, pieces_sym, grid_sym, (1000, 1000)
+        )
+        self.assertTrue(is_tied_sym)
+        self.assertIn(0, best_shifts_sym)
+        self.assertIn(2, best_shifts_sym)  # Shift 0 and Shift 2 (180 deg) both match!
+        self.assertEqual(len(best_shifts_sym), 2)
+        self.assertEqual(score_sym, 1.0)
+
+        # 3. Empty board (0 pieces): 4-way tie
+        grid_empty = adapter.fen_to_grid("8/8/8/8/8/8/8/8")
+        _, _, score_empty, matches_empty, is_tied_empty, best_shifts_empty = adapter.resolve_board_orientation(
+            corners, [], grid_empty, (1000, 1000)
+        )
+        self.assertTrue(is_tied_empty)
+        self.assertEqual(best_shifts_empty, [0, 1, 2, 3])
+        self.assertEqual(score_empty, 0.0)
+        self.assertEqual(matches_empty, 0)
+
 
 
 if __name__ == "__main__":

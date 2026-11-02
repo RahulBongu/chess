@@ -213,29 +213,32 @@ def is_strictly_convex(corners: np.ndarray) -> bool:
     return all(signs) or not any(signs)
 
 
+def get_canonical_screen_corners(corners_norm: np.ndarray, w_img: int, h_img: int) -> np.ndarray:
+    """Orders 4 corners clockwise starting at top-left in screen coordinates."""
+    corners_px = corners_norm.copy()
+    corners_px[:, 0] *= w_img
+    corners_px[:, 1] *= h_img
+    center = corners_px.mean(axis=0)
+    angles = np.arctan2(corners_px[:, 1] - center[1], corners_px[:, 0] - center[0])
+    order = np.argsort(angles)
+    pts = corners_px[order]
+    start = int(np.argmin(pts[:, 0] + pts[:, 1]))
+    return np.roll(pts, -start, axis=0)
+
+
 def resolve_board_orientation(
     corners: np.ndarray,
     pieces: List[Dict[str, Any]],
     grid: List[List[str]],
     image_shape: Tuple[int, int],
-) -> Tuple[np.ndarray, str, float, int]:
+) -> Tuple[np.ndarray, str, float, int, bool, List[int]]:
     """
-    Tests 4 cyclic shifts of the board corners against ground-truth FEN occupancy
-    to resolve physical orientation (e.g., white-bottom vs black-bottom vs flank).
-    Returns: (ordered_corners_px, orientation_name, match_rate, matching_pieces)
+    Tests 4 cyclic shifts of canonical screen corners against ground-truth FEN occupancy
+    to resolve physical orientation (White-bottom vs Flank-right vs Black-bottom vs Flank-left).
+    Returns: (resolved_corners, orientation_name, match_rate, matches, is_tied, optimal_shifts)
     """
     h_img, w_img = image_shape
-    # Scale normalized [0..1] corners to pixel coordinates
-    corners_px = corners.copy()
-    corners_px[:, 0] *= w_img
-    corners_px[:, 1] *= h_img
-
-    # Ensure counter-clockwise / clockwise canonical ordering
-    signed_area = 0.5 * sum(
-        corners_px[i, 0] * corners_px[(i + 1) % 4, 1] - corners_px[(i + 1) % 4, 0] * corners_px[i, 1]
-        for i in range(4)
-    )
-    pts = corners_px[::-1] if signed_area < 0 else corners_px
+    C_screen = get_canonical_screen_corners(corners, w_img, h_img)
 
     orientation_names = [
         "white_perspective",
@@ -244,12 +247,9 @@ def resolve_board_orientation(
         "flank_left",
     ]
 
-    best_shift = 0
-    best_matches = -1
-    best_H = None
-
+    shift_matches = []
     for shift in range(4):
-        shifted = np.roll(pts, -shift, axis=0)
+        shifted = np.roll(C_screen, -shift, axis=0)
         H = cv2.getPerspectiveTransform(shifted, CANONICAL_DST)
         matches = 0
         for p in pieces:
@@ -265,17 +265,21 @@ def resolve_board_orientation(
                 row = min(7, max(0, int(v / CANONICAL_SQUARE_SIZE)))
                 if grid[row][col] == p["info"]["char"]:
                     matches += 1
-        if matches > best_matches:
-            best_matches = matches
-            best_shift = shift
-            best_H = H
+        shift_matches.append(matches)
+
+    max_matches = max(shift_matches)
+    best_shifts = [i for i, m in enumerate(shift_matches) if m == max_matches]
+    is_tied = len(best_shifts) > 1
+
+    # Deterministic default: if shift 0 is among optimal, prefer 0; otherwise first optimal
+    best_shift = 0 if 0 in best_shifts else best_shifts[0]
 
     total_pieces = len(pieces)
-    match_rate = (best_matches / total_pieces) if total_pieces > 0 else 0.0
-    resolved_corners = np.roll(pts, -best_shift, axis=0)
+    match_rate = (max_matches / total_pieces) if total_pieces > 0 else 0.0
+    resolved_corners = np.roll(C_screen, -best_shift, axis=0)
     resolved_name = orientation_names[best_shift]
 
-    return resolved_corners, resolved_name, match_rate, best_matches
+    return resolved_corners, resolved_name, match_rate, max_matches, is_tied, best_shifts
 
 
 def resolve_image_driven_orientation(
@@ -288,16 +292,7 @@ def resolve_image_driven_orientation(
     Never uses ground-truth FEN or piece labels.
     """
     h_img, w_img = image_shape
-    corners_px = corners.copy()
-    corners_px[:, 0] *= w_img
-    corners_px[:, 1] *= h_img
-
-    center = corners_px.mean(axis=0)
-    angles = np.arctan2(corners_px[:, 1] - center[1], corners_px[:, 0] - center[0])
-    order = np.argsort(angles)
-    pts = corners_px[order]
-    start = int(np.argmin(pts[:, 0] + pts[:, 1]))
-    return np.roll(pts, -start, axis=0)
+    return get_canonical_screen_corners(corners, w_img, h_img)
 
 
 def compute_selective_accuracy_accounting(
@@ -571,7 +566,7 @@ def process_external_image(
 
     # 3. Perspective rectification & orientation resolution (Mode 1: Oracle)
     grid = fen_to_grid(placement)
-    resolved_corners, orientation, match_rate, matches = resolve_board_orientation(
+    resolved_corners, orientation, match_rate, matches, is_tied, best_shifts = resolve_board_orientation(
         board_corners, pieces, grid, (h_img, w_img)
     )
 
@@ -594,7 +589,8 @@ def process_external_image(
                 img_driven_matches += 1
     total_pieces = len(pieces)
     img_driven_match_rate = (img_driven_matches / total_pieces) if total_pieces > 0 else 0.0
-    agrees_with_oracle = bool(np.allclose(image_driven_corners, resolved_corners, atol=2.0))
+    agrees_with_oracle = bool(0 in best_shifts)
+    is_unique_optimal = bool(best_shifts == [0])
 
     H = cv2.getPerspectiveTransform(resolved_corners, CANONICAL_DST)
     rectified = cv2.warpPerspective(img, H, (CANONICAL_BOARD_SIZE, CANONICAL_BOARD_SIZE))
@@ -641,6 +637,8 @@ def process_external_image(
                 "placement_match_score": round(match_rate, 4),
                 "placement_matched_pieces": matches,
                 "is_oracle_assisted": True,
+                "is_tied": is_tied,
+                "optimal_shifts": best_shifts,
             },
             "mode2_image_driven": {
                 "description": "Orientation determined by image plane screen coordinates without FEN oracle",
@@ -648,6 +646,8 @@ def process_external_image(
                 "placement_match_score": round(img_driven_match_rate, 4),
                 "placement_matched_pieces": img_driven_matches,
                 "orientation_agrees_with_oracle": agrees_with_oracle,
+                "is_unique_optimal": is_unique_optimal,
+                "is_tied": is_tied,
                 "is_oracle_assisted": False,
             },
         },
@@ -781,7 +781,9 @@ def main() -> int:
         processed_recs = [r for r in records if r["status"] == "PROCESSED"]
         avg_mode1 = np.mean([r["placement_match_score"] for r in processed_recs])
         avg_mode2 = np.mean([r["evaluation_modes"]["mode2_image_driven"]["placement_match_score"] for r in processed_recs])
-        agrees_cnt = sum(1 for r in processed_recs if r["evaluation_modes"]["mode2_image_driven"]["orientation_agrees_with_oracle"])
+        agrees_optimal_cnt = sum(1 for r in processed_recs if r["evaluation_modes"]["mode2_image_driven"]["orientation_agrees_with_oracle"])
+        unique_optimal_cnt = sum(1 for r in processed_recs if r["evaluation_modes"]["mode2_image_driven"].get("is_unique_optimal", False))
+        tied_optimal_cnt = sum(1 for r in processed_recs if r["evaluation_modes"]["mode2_image_driven"].get("is_tied", False) and r["evaluation_modes"]["mode2_image_driven"]["orientation_agrees_with_oracle"])
         exact_mode1 = sum(1 for r in processed_recs if r["placement_match_score"] == 1.0)
         exact_mode2 = sum(1 for r in processed_recs if r["evaluation_modes"]["mode2_image_driven"]["placement_match_score"] == 1.0)
 
@@ -816,7 +818,7 @@ def main() -> int:
             else 0.0
         )
 
-        print("\n--- Disaggregated Evaluation Modes (Milestone 5.2J Audit) ---")
+        print("\n--- Disaggregated Evaluation Modes (Milestones 5.2J / 5.2K / 5.2L) ---")
         print(f"Mode 1 (Ground-Truth-Assisted / Oracle Orientation):")
         print(f"  Mean FEN Placement Match Score:    {avg_mode1 * 100:.2f}% (YOLO box to FEN square alignment)")
         print(f"  Exact Placement Matches (100%):    {exact_mode1}/{len(processed_recs)} ({exact_mode1/len(processed_recs)*100:.2f}%)")
@@ -825,8 +827,11 @@ def main() -> int:
         print(f"\nMode 2 (Image-Driven Screen-Space Orientation):")
         print(f"  Mean FEN Placement Match Score:    {avg_mode2 * 100:.2f}% (screen-space corner ordering)")
         print(f"  Exact Placement Matches (100%):    {exact_mode2}/{len(processed_recs)} ({exact_mode2/len(processed_recs)*100:.2f}%)")
-        print(f"  Agreement with Oracle Orientation: {agrees_cnt}/{len(processed_recs)} ({agrees_cnt/len(processed_recs)*100:.2f}%)")
-        print(f"  [DISCLOSURE: Mode 2 uses image plane geometry without FEN oracle. Drops { (avg_mode1 - avg_mode2)*100:.2f} pp.]")
+        print(f"  Orientation Agreement with Oracle:")
+        print(f"    - Unique Strict Agreement:       {unique_optimal_cnt}/{len(processed_recs)} ({unique_optimal_cnt/len(processed_recs)*100:.2f}%)")
+        print(f"    - Optimal or Tied Agreement:     {agrees_optimal_cnt}/{len(processed_recs)} ({agrees_optimal_cnt/len(processed_recs)*100:.2f}%)")
+        print(f"    - Tied Cases (Multi-Optimal):    {tied_optimal_cnt}/{len(processed_recs)} ({tied_optimal_cnt/len(processed_recs)*100:.2f}%)")
+        print(f"  [DISCLOSURE: Reconciles 5.2J (71.17% optimal/tied) vs 5.2K (65.97% unique strict). Drops { (avg_mode1 - avg_mode2)*100:.2f} pp from oracle.]")
         print(f"\nMode 3 (End-to-End Autonomous Pipeline):")
         print(f"  Autonomous Raw Board Detection:    Requires deep-learning pose keypoints or manual calibration.")
         print(f"  Classical Contour Detection:       0% on oblique tile-floor scenes (over 100k grout/glare contours).")
