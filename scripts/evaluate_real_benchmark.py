@@ -195,6 +195,10 @@ def compute_metrics(
 
     top2_correct = 0
     abstain_count = 0
+    accepted_and_correct = 0
+    accepted_and_incorrect = 0
+    abstained_and_correct = 0
+    abstained_and_incorrect = 0
 
     for i in range(n_samples):
         # Top-2 check
@@ -206,11 +210,26 @@ def compute_metrics(
         s_prob = np.sort(y_prob[i])
         conf = float(s_prob[-1])
         margin = float(s_prob[-1] - s_prob[-2])
-        if conf < conf_thresh or margin < margin_thresh:
+        is_correct = bool(y_true[i] == y_pred[i])
+        is_accepted = bool(conf >= conf_thresh and margin >= margin_thresh)
+
+        if is_accepted:
+            if is_correct:
+                accepted_and_correct += 1
+            else:
+                accepted_and_incorrect += 1
+        else:
             abstain_count += 1
+            if is_correct:
+                abstained_and_correct += 1
+            else:
+                abstained_and_incorrect += 1
 
     top2_acc = float(top2_correct / n_samples)
     abstain_rate = float(abstain_count / n_samples)
+    accepted_count = n_samples - abstain_count
+    selective_acc = float(accepted_and_correct / accepted_count) if accepted_count > 0 else 0.0
+    error_rate_among_accepted = float(accepted_and_incorrect / accepted_count) if accepted_count > 0 else 0.0
 
     # Per-class metrics
     per_class = {}
@@ -243,6 +262,13 @@ def compute_metrics(
         "top2_accuracy": round(top2_acc, 4),
         "abstain_count": abstain_count,
         "abstain_rate": round(abstain_rate, 4),
+        "accepted_count": accepted_count,
+        "accepted_and_correct": accepted_and_correct,
+        "accepted_and_incorrect": accepted_and_incorrect,
+        "selective_accuracy": round(selective_acc, 4),
+        "error_rate_among_accepted": round(error_rate_among_accepted, 4),
+        "abstained_and_correct": abstained_and_correct,
+        "abstained_and_incorrect": abstained_and_incorrect,
         "confusion_matrix": cm.tolist(),
         "per_class": per_class,
     }
@@ -364,8 +390,11 @@ def print_metrics_table(title: str, metrics: Dict):
     print(f"Total Evaluated Samples: {n_samples}")
     print(f"Top-1 Accuracy:          {metrics['top1_accuracy'] * 100:.2f}% ({metrics['top1_correct']}/{n_samples})")
     print(f"Top-2 Accuracy:          {metrics['top2_accuracy'] * 100:.2f}% ({metrics['top2_correct']}/{n_samples})")
-    print(f"Abstention Rate:         {metrics['abstain_rate'] * 100:.2f}% ({abstain_cnt}/{n_samples}) [conf < 0.60 or margin < 0.20]")
+    print(f"Abstention Rate:         {metrics['abstain_rate'] * 100:.2f}% ({abstain_cnt}/{n_samples}) [conf < {DEFAULT_CONFIDENCE_THRESHOLD:.2f} or margin < {DEFAULT_MARGIN_THRESHOLD:.2f}]")
     print(f"Coverage:                {coverage_pct:.2f}% ({accepted_cnt}/{n_samples} accepted for prediction)")
+    print(f"Selective Accuracy:      {metrics.get('selective_accuracy', 0.0) * 100:.2f}% ({metrics.get('accepted_and_correct', 0)}/{accepted_cnt}) [accepted & correct / accepted]")
+    print(f"Accepted Error Rate:     {metrics.get('error_rate_among_accepted', 0.0) * 100:.2f}% ({metrics.get('accepted_and_incorrect', 0)}/{accepted_cnt})")
+    print(f"Abstained Correct:       {metrics.get('abstained_and_correct', 0)}/{abstain_cnt} (diagnostic only)")
 
     lat = metrics.get("latency", {})
     if lat:

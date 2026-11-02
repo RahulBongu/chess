@@ -427,6 +427,51 @@ class CapturePipelineSyntheticTests(unittest.TestCase):
         # Fourth point must be bottom-left ([150, 850])
         np.testing.assert_allclose(ordered[3], [150.0, 850.0], atol=1.0)
 
+    def test_selective_accuracy_accounting_uses_independent_numerators(self):
+        # Milestone 5.2K: Fixture where:
+        # - Sample 1: accepted and correct
+        # - Sample 2: accepted and incorrect
+        # - Sample 3: abstained and correct (abstained correct prediction)
+        # - Sample 4: abstained and incorrect
+        samples = [
+            {"confidence": 0.85, "margin": 0.35, "is_correct": True},   # accepted, correct
+            {"confidence": 0.70, "margin": 0.25, "is_correct": False},  # accepted, incorrect
+            {"confidence": 0.40, "margin": 0.10, "is_correct": True},   # abstained, correct
+            {"confidence": 0.30, "margin": 0.05, "is_correct": False},  # abstained, incorrect
+        ]
+
+        res = adapter.compute_selective_accuracy_accounting(samples)
+
+        # 1. Total samples and partition coverage
+        self.assertEqual(res["total_samples"], 4)
+        self.assertEqual(res["accepted_count"], 2)
+        self.assertEqual(res["abstention_count"], 2)
+        self.assertEqual(res["coverage"], 0.50)
+        self.assertEqual(res["abstention_rate"], 0.50)
+
+        # 2. Independent numerators check:
+        # Overall correct numerator is 2 (sample 1 + sample 3)
+        self.assertEqual(res["overall_correct"], 2)
+        self.assertEqual(res["overall_accuracy"], 0.50)
+
+        # Accepted & correct numerator is 1 (only sample 1)
+        self.assertEqual(res["accepted_and_correct"], 1)
+        self.assertEqual(res["accepted_and_incorrect"], 1)
+
+        # Abstained & correct is 1 (sample 3, diagnostic only)
+        self.assertEqual(res["abstained_and_correct"], 1)
+        self.assertEqual(res["abstained_and_incorrect"], 1)
+
+        # 3. Selective accuracy must be accepted_and_correct / accepted = 1 / 2 = 0.50
+        self.assertEqual(res["selective_accuracy"], 0.50)
+        self.assertEqual(res["error_rate_among_accepted"], 0.50)
+
+        # 4. Proves the flawed formula (overall_correct / accepted = 2 / 2 = 1.0) is wrong and distinct
+        flawed_acc = res["overall_correct"] / res["accepted_count"]
+        self.assertNotEqual(res["selective_accuracy"], flawed_acc)
+        self.assertEqual(flawed_acc, 1.0)
+        self.assertEqual(res["selective_accuracy"], 0.50)
+
     def test_external_adapter_skips_timestamp_images_cleanly(self):
         img_path = self.write_synthetic_image("20260219_220620.jpg", size=1000)
         ann_path = self.raw_dir / "20260219_220620.txt"

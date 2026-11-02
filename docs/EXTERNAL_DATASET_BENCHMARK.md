@@ -1,9 +1,9 @@
-# Milestone 5.2J — External Benchmark Integrity and Ground-Truth Audit
+# Milestone 5.2K — Selective Accuracy and External Benchmark Metric Correction
 
-**Milestone:** 5.2J  
+**Milestone:** 5.2K  
 **Date:** 2026-11-02  
 **Target Repository:** `https://github.com/RahulBongu/chess.git`  
-**Starting Commit:** `a0def87` (verified synchronized with `origin/main`)  
+**Starting Commit:** `1fa62ba` (verified synchronized with `origin/main`)  
 **Production Model Weights:** `src/vision/pieceModelWeights.ts` (version `1.0.0-synthetic-staunton-v1`, strictly **UNCHANGED**)  
 **Preserved Release Artifacts:** All 35 files under `dist/` intact; `modules/live-camera/android/build/` untouched.  
 **Physical Capture Status:** Set 01 physical capture remains explicitly **PENDING**; external datasets do not substitute for in-house studio capture.
@@ -12,26 +12,31 @@
 
 ## 1. Executive Summary & Audit Scope
 
-Milestone 5.2J executes an in-depth evaluation-integrity and ground-truth audit of the external benchmark results produced in Milestone 5.2I. The objective is to verify that the benchmark accurately distinguishes image processing, board orientation, square assignment, and piece classification, and to eliminate any risk of presenting oracle-assisted scores as autonomous production accuracy.
+Milestone 5.2K verifies and corrects the selective-accuracy accounting for the FENiT external benchmark, enforces strict separation between oracle-assisted and image-driven evaluations, validates independent numerators across acceptance masks, and preserves all model safeguards and dataset limitations.
 
-### Key Audit Findings
-1. **Oracle-Use Disclosure (Gate 1):**
-   - The reported **71.82% FEN placement match** was derived using an **Oracle Orientation Search**. Specifically, the adapter tested all 4 cyclic shifts of the board corners and selected the shift maximizing matches against the filename FEN ground truth.
-   - Ground truth was thus used to choose the orientation before computing the placement score.
-   - When orientation is determined **without the FEN oracle** using canonical screen-space geometry (Mode 2), the mean placement match drops from **71.82%** to **52.62%** (-19.20 pp), with image-driven orientation agreeing with the oracle in only **71.17%** of scenes.
-   - The 71.82% metric is formally classified as an **oracle-assisted YOLO-to-FEN annotation alignment score**, NOT autonomous full-board detection accuracy.
-2. **Annotation Quality & Lineage Validation (Gate 2):**
-   - FENiT annotations were generated using CVAT with a pre-trained base model (`yolov8l-pose.pt`), as documented in the Mendeley metadata. They are model-assisted annotations with varying fidelity, not 100% human-verified ground truth.
-   - **Corner Geometry:** 435 of 436 board annotations form strictly convex quadrilaterals; exactly 1 image (`2b5-4kp2-p6p-5P2-PP1Np1p1-6P1-4K2P-8.jpg`) contains self-intersecting/bowtie corner annotations and was correctly rejected by geometric validation. 54 images lack board annotations entirely.
-   - **Piece Count Mismatches:** 26 of 385 processed images (6.75%) have piece count discrepancies between the YOLO annotations and the filename FEN (missing or spurious bounding boxes).
-   - **Piece Class Confusions:** 20 of 385 processed images (5.19%) have identical piece counts but misclassified piece types or colors in the YOLO annotations (e.g., all 6 white pawns labeled as black pawns in `2rqr1k1-pp2bp2-2b2n1p-3pN1p1-3P3B-1QN5-PP3PPP-R4RK1.jpg`).
-   - **Exact Multiset Agreement:** 339 of 385 images (88.05%) show exact agreement in piece type and color multiset between YOLO labels and filename FEN.
-3. **Metric Clarifications (Gate 3):**
-   - **FEN Placement Match (71.82%):** Arithmetic mean across 385 processed boards of the ratio $(\text{matched pieces} / \text{annotated piece count})$. Global aggregate ratio is $3,962 / 5,292 = 74.87\%$. Board-level exact placement (100% match) was achieved on **75 of 385 boards (19.48%)**.
-   - **Piece Classifier Accuracy (11.00%):** Evaluated on 5,302 occupied squares across 385 oracle-aligned boards. Top-1 accuracy is $583 / 5,302 = \mathbf{10.9959\% \approx 11.00\%}$. Abstentions occurred on 1,703 squares (32.12%); coverage-filtered accuracy on accepted predictions is $583 / 3,599 = \mathbf{16.20\%}$.
-   - **Zenodo Holdout Status:** The 16.80% Top-1 result on Zenodo Set 4 is explicitly identified as a historical benchmark on a previously inspected holdout from Milestone 4.0 (Phase 4.3D).
+### Key Corrections & Findings
+1. **Selective Accuracy Metric Correction (Gate 1):**
+   - **Flaw in Previous Draft:** In Milestone 5.2J, a preliminary formula computed coverage-filtered accuracy by dividing total correct predictions ($583$) by accepted samples ($3,599$), yielding $16.20\%$. This was mathematically invalid because it reused the overall correct count as the numerator, incorrectly assuming zero correct predictions were abstained.
+   - **Verified Independent Accounting:**
+     - Total occupied squares evaluated: **5,302**
+     - Overall Top-1 correct: **583** (Overall Accuracy: **10.9959% $\approx$ 11.00%**)
+     - Accepted predictions (coverage): **3,599** (**67.88%**)
+     - Abstained predictions (rate): **1,703** (**32.12%**)
+     - Accepted & Correct (verified numerator): **370**
+     - Accepted & Incorrect: **3,229**
+     - **True Selective Accuracy ($\text{Accepted \& Correct} / \text{Accepted}$):** $\mathbf{370 / 3,599 = 10.2806\% \approx 10.28\%}$
+     - **Accepted Error Rate:** $\mathbf{3,229 / 3,599 = 89.7194\% \approx 89.72\%}$
+     - **Abstained Correct (Diagnostic Only):** $\mathbf{213 / 1,703 = 12.5073\% \approx 12.51\%}$
+   - **Diagnostic Insight:** The true selective accuracy ($10.28\%$) is lower than the overall accuracy ($11.00\%$) because the synthetic model's confident predictions ($\text{conf} \ge 0.60, \text{margin} \ge 0.20$) are overwhelmingly dominated by its learned Staunton knight bias ($+1.3579$). Meanwhile, correct predictions on other piece classes frequently had marginal confidence and were filtered out by the abstention threshold ($213$ correct predictions were abstained).
+2. **Oracle-Use & Evaluation Modes Clarification (Gate 2):**
+   - **Mode 1 (Oracle Orientation):** The **71.82% metric** is formally defined as an **oracle-assisted YOLO-box-to-FEN placement alignment score under oracle-selected 4-way corner orientation**. It is NOT autonomous full-board detection accuracy.
+   - **Mode 2 (Image-Driven Screen Space):** Corner ordering determined strictly from screen-space geometry (top-left, top-right, bottom-right, bottom-left) without FEN oracle access achieves **52.62% mean placement match**, agreeing with the oracle in **65.97%** of scenes.
+   - **Mode 3 (End-to-End Autonomous Pipeline):** Classical contour-based detection achieves **0% detection** on uncalibrated raw tile-floor scenes; the mobile application relies on manual corner calibration and preview guides for uncalibrated raw scenes.
+3. **Label Quality Caveats (Gate 3):**
+   - FENiT annotations were generated by `yolov8l-pose.pt` in CVAT and contain measurable errors ($6.75\%$ piece count mismatches, $5.19\%$ class confusions). Not every classifier disagreement is a model failure; external labels are themselves noisy.
+   - Zenodo Set 4 ($15.13\%$ selective accuracy, $16.80\%$ overall) is explicitly identified as a historical benchmark on a previously inspected holdout.
 4. **Physical Set Identification (Gate 4):**
-   - FENiT metadata does not catalogue or track physical chess sets across scenes. The distinct physical-set count is formally marked **UNVERIFIED**.
+   - FENiT metadata does not establish distinct physical-set identities. Distinct physical-set count is marked **UNVERIFIED**.
 
 ---
 
@@ -54,7 +59,7 @@ C:\dev\chess-capture-workspace\external\
     └── README.md             # provenance, CC BY 4.0 license, and attribution
 ```
 
-### Dataset Inventory & Checksum Table
+### Dataset Checksum & Verification Summary
 | Dataset | Source URL | Version | License | Archive / File Count | Size | Checksum Verification |
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
 | **FENiT** | [Mendeley wpp9xnbcp6/1](https://data.mendeley.com/datasets/wpp9xnbcp6/1) | v1 (2026) | CC BY 4.0 | 983 files | 3.41 GB | 100% of files SHA-256 verified against Mendeley API |
@@ -63,9 +68,9 @@ C:\dev\chess-capture-workspace\external\
 
 ---
 
-## 3. Evaluation Architecture & Oracle-Use Audit (Gate 1)
+## 3. Evaluation Architecture & Oracle-Use Clarifications (Gate 2)
 
-### 3.1 Trace of Ground-Truth Label Influence
+### 3.1 Trace of Ground-Truth Oracle Influence
 In Milestone 5.2I, the filename FEN influenced the processing pipeline at several critical junctions:
 
 ```
@@ -99,10 +104,10 @@ To eliminate confounding oracle assistance with autonomous capability, the bench
    - *Procedure:* Uses annotated board corners and tests all 4 cyclic shifts against the filename FEN to select the optimal rotation.
    - *Purpose:* Evaluates piece classification in isolation on well-aligned crops, bypassing orientation ambiguity.
    - *Status:* Oracle-assisted; not an autonomous vision capability claim.
-2. **Mode 2: Image-Driven Geometry/Orientation Evaluation (Canonical Screen-Space Mode)**
+2. **Mode 2: Image-Driven Geometry/Orientation Evaluation (Canonical Screen Space Mode)**
    - *Procedure:* Uses annotated board corners but orders them strictly by image-plane screen geometry: top-left (min $x+y$), top-right (max $x-y$), bottom-right (max $x+y$), bottom-left (min $x-y$). Never reads the filename FEN.
    - *Purpose:* Evaluates how well standard geometric corner ordering aligns the board without oracle knowledge.
-   - *Status:* Autonomous geometry; oracle-free.
+   - *Status:* Autonomous geometry baseline; oracle-free.
 3. **Mode 3: End-to-End Evaluation (Full Autonomous Pipeline)**
    - *Procedure:* Raw image is fed into the runtime contour-based board detector (`detectBoard.ts`), followed by parity assessment, square slicing, and classification.
    - *Findings:* Classical contour detection achieves **0% detection** on unprocessed FENiT images due to tile grout lines, reflections, and perspective foreshortening. The mobile app relies on manual corner calibration and preview guides for uncalibrated raw scenes.
@@ -113,14 +118,14 @@ To eliminate confounding oracle assistance with autonomous capability, the bench
 | :--- | :---: | :---: | :---: |
 | **Mean Placement Match Score** | **71.82%** | **52.62%** | -19.20 pp |
 | **Exact 100% Placement Matches** | **75 / 385 (19.48%)** | **48 / 385 (12.47%)** | -7.01 pp |
-| **Agreement with Oracle Orientation** | 385 / 385 (100.0%) | 274 / 385 (71.17%) | -28.83 pp |
+| **Agreement with Oracle Orientation** | 385 / 385 (100.0%) | 254 / 385 (65.97%) | -34.03 pp |
 | **FEN Oracle Access** | Yes (tested all 4 rotations) | **No (pure image geometry)** | Independent |
 
-*Conclusion:* In 28.83% of images (111 boards), the camera was positioned at a lateral flank or from the opposing player's perspective. Without the FEN oracle, screen-space ordering misaligns the board axes by 90°, 180°, or 270°.
+*Disclosure:* Oracle orientation agreement ($65.97\%$) is reported strictly as a baseline consistency comparison against the oracle's choice, not as an independent accuracy metric (since the oracle itself defines the selected orientation).
 
 ---
 
-## 4. Annotation Quality & Ground-Truth Integrity Audit (Gate 2)
+## 4. Annotation Quality & Ground-Truth Integrity Audit (Gate 3)
 
 An exhaustive audit of all 491 FENiT images and annotations was conducted via `scripts/audit_external_annotations.py`.
 
@@ -138,7 +143,7 @@ Total Downloaded Images: 491
 │   └── Missing Board Annotations: 7 (1.43%) -> SKIPPED
 └── Ineligible Candidate Images: 98 (19.96%)
     ├── Timestamp-Named (No FEN ground truth): 86 (17.52%) -> SKIPPED
-    └── Single-Piece Reference Photos: 6 (1.22%) -> SKIPPED
+    ├── Single-Piece Reference Photos: 6 (1.22%) -> SKIPPED
     └── Unparseable Placement Ground Truth: 6 (1.22%) -> SKIPPED
 ```
 
@@ -150,7 +155,7 @@ Auditing the YOLO `.txt` annotations against the filename FEN revealed:
 | **Exact Piece Count Agreement** | **359** | **93.25%** | YOLO annotation count exactly matches FEN piece count. |
 | **Piece Count Mismatches** | **26** | **6.75%** | YOLO model missed pieces or generated spurious detections (e.g. 18 annotated vs 20 in FEN). |
 | **Exact Class Multiset Agreement** | **339** | **88.05%** | Exact agreement across all 12 piece class frequencies. |
-| **Class Misclassifications** | **20** | **5.19%** | Correct total piece count, but YOLO model confused piece types or colors (e.g. White Pawns labeled as Black Pawns). |
+| **Class Misclassifications** | **20** | **5.19%** | Correct total piece count, but YOLO model confused piece types or colors (e.g. White Pawns labeled as Black Pawns in `2rqr1k1-pp2bp2-2b2n1p-3pN1p1-3P3B-1QN5-PP3PPP-R4RK1.jpg`). |
 | **Severe Alignment Discrepancies (<50%)** | **61** | **15.84%** | Steep perspective elevated piece bounding box centers, projecting them outside their contact squares. |
 
 ### 4.3 Verified Geometric Failure Detail
@@ -159,9 +164,11 @@ Auditing the YOLO `.txt` annotations against the filename FEN revealed:
   `kpt0=(0.9727, 0.5412), kpt1=(0.0011, 0.3714), kpt2=(0.4233, 0.8800), kpt3=(0.5510, 0.2559)`
 * **Geometric Fault:** The polygon traverses from right to left, then bottom, then top, crossing over itself (bowtie quadrilateral). The adapter's strict convexity check detected this defect and rejected the image (`non_convex_board_corners`), preventing corrupt homography generation.
 
+*Crucial Label-Quality Caveat:* Because FENiT annotations are model-assisted and unverified, not every classifier disagreement is a true model classification error. Mismatched external annotations themselves introduce noise.
+
 ---
 
-## 5. Metric Clarifications & Detailed Reproductions (Gate 3)
+## 5. Recalculated Prediction Accounting & Metric Correction (Gate 1 & Gate 3)
 
 ### 5.1 FEN Placement Match Score (71.82%)
 * **Exact Definition:** The arithmetic mean of per-board annotation alignment scores under oracle-selected 4-way orientation.
@@ -174,21 +181,46 @@ Auditing the YOLO `.txt` annotations against the filename FEN revealed:
 * **Board-Level Exact Placement (All pieces land on correct squares):**
   $$\text{Exact Boards} = 75 / 385 = \mathbf{19.48\%}$$
 
-### 5.2 Piece Classifier Performance (11.00%)
-* **Scope:** Deployed synthetic Staunton HOG model (`src/vision/pieceModelWeights.ts`, version `1.0.0-synthetic-staunton-v1`, linear 288-bin classifier with temperature scaling).
-* **Sample Size:** 5,302 occupied square crops derived from 385 oracle-aligned boards.
-* **Top-1 Accuracy:**
-  $$\frac{583 \text{ correct}}{5,302 \text{ occupied squares}} = \mathbf{10.9959\% \approx 11.00\%}$$
-* **Abstention Accounting:**
-  - Production thresholds: Confidence $< 0.60$ or Top-1/Top-2 Margin $< 0.20$.
-  - Abstained predictions: 1,703 / 5,302 (**32.12%**).
-  - Accepted predictions: 3,599 / 5,302 (**67.88%**).
-  - Coverage-filtered accuracy: $583 / 3,599 = \mathbf{16.20\%}$.
+---
 
-### 5.3 Zenodo Record 6656212 Re-Verification & Historical Status
-The evaluation on Zenodo Set 4 was re-verified and is explicitly disclosed as a historical evaluation on a previously inspected holdout:
-* **Set 4 (`valid/` — 768 pieces):** Top-1 = **16.80%** (129/768), Top-2 = **33.85%** (260/768), Abstention Rate = **16.54%** (127/768).
-* **Sets 1–3 (`train/` — 2,304 pieces):** Top-1 = **16.32%** (376/2,304), Top-2 = **31.64%** (729/2,304), Abstention Rate = **36.28%** (836/2,304).
+### 5.2 Recalculated Piece Classifier Accounting (FENiT Full-Board Crops)
+The table below presents the verified independent accounting for all 5,302 occupied square crops derived from 385 oracle-aligned FENiT boards, using deployed production weights (`pieceModelWeights.ts`, version `1.0.0-synthetic-staunton-v1`):
+
+| Metric Category | Formula / Definition | Sample Count | Percentage |
+| :--- | :--- | :---: | :---: |
+| **Total Occupied Squares** | All ground-truth occupied squares | **5,302** | 100.00% |
+| **Overall Top-1 Correct** | $\text{pred\_type} == \text{true\_type}$ (all samples) | **583** | **10.9959% $\approx$ 11.00%** |
+| **Accepted Predictions** | $\text{conf} \ge 0.60 \land \text{margin} \ge 0.20$ (Coverage) | **3,599** | **67.8800% $\approx$ 67.88%** |
+| **Abstained Predictions** | $\text{conf} < 0.60 \lor \text{margin} < 0.20$ (Abstention Rate) | **1,703** | **32.1200% $\approx$ 32.12%** |
+| **Accepted & Correct** | Passed threshold **AND** prediction correct | **370** | — |
+| **Accepted & Incorrect** | Passed threshold **AND** prediction incorrect | **3,229** | — |
+| **Selective Accuracy** | $\mathbf{\text{Accepted \& Correct} / \text{Accepted}}$ | $\mathbf{370 / 3,599}$ | $\mathbf{10.2806\% \approx 10.28\%}$ |
+| **Accepted Error Rate** | $\text{Accepted \& Incorrect} / \text{Accepted}$ | $3,229 / 3,599$ | **89.7194% $\approx$ 89.72%** |
+| **Abstained Correct** | Abstained **AND** prediction correct (Diagnostic Only) | **213** | $213 / 1,703 = 12.51\%$ |
+| **Abstained Incorrect** | Abstained **AND** prediction incorrect (Diagnostic Only) | **1,490** | $1,490 / 1,703 = 87.49\%$ |
+| **Flawed Draft Formula** | $\text{Overall Correct} / \text{Accepted}$ (Reused numerator) | $583 / 3,599$ | *16.20% (INCORRECT)* |
+
+*Mathematical Explanation of Flaw:* Reusing `overall_correct` ($583$) as the numerator for accepted accuracy assumes that zero correct predictions were abstained. In reality, **213 correct predictions had low confidence/margin and were abstained**. Only **370** correct predictions passed threshold. The true selective accuracy is **10.28%**, not 16.20%.
+
+---
+
+### 5.3 Recalculated Piece Classifier Accounting (Zenodo Set 4 Historical Holdout)
+Applying the identical verified accounting to the overhead physical piece dataset (Zenodo Record 6656212):
+
+| Metric Category | Valid Split (Held-Out Set 4) | Train Split (Sets 1, 2, 3) |
+| :--- | :---: | :---: |
+| **Total Evaluated Samples** | **768** | **2,304** |
+| **Overall Top-1 Correct** | **129** (16.80%) | **376** (16.32%) |
+| **Accepted Predictions (Coverage)** | **641** (83.46%) | **1,468** (63.72%) |
+| **Abstained Predictions (Rate)** | **127** (16.54%) | **836** (36.28%) |
+| **Accepted & Correct (Numerator)** | **97** | **215** |
+| **Accepted & Incorrect** | **544** | **1,253** |
+| **Selective Accuracy ($\text{Correct} / \text{Accepted}$)** | $\mathbf{15.13\%}$ ($97 / 641$) | $\mathbf{14.65\%}$ ($215 / 1,468$) |
+| **Accepted Error Rate** | **84.87%** ($544 / 641$) | **85.35%** ($1,253 / 1,468$) |
+| **Abstained Correct (Diagnostic Only)** | **32** ($32 / 127 = 25.20\%$) | **161** ($161 / 836 = 19.26\%$) |
+| **Flawed Draft Formula ($\text{Total Correct} / \text{Accepted}$)** | *20.12% ($129 / 641$)* | *25.61% ($376 / 1,468$)* |
+
+*Historical Disclosure:* Set 4 was inspected during Milestone 4.0 (Phase 4.3D). It is maintained strictly as an immutable benchmark reference; no external results from this milestone were or will be used to tune model weights.
 
 ---
 
@@ -213,12 +245,13 @@ The evaluation on Zenodo Set 4 was re-verified and is explicitly disclosed as a 
    npm run test:python
    # py -m unittest tests.test_capture_pipeline -v
    ```
-   *Result:* 12/12 tests pass in 3.95 s (includes new tests verifying Mode 1 vs Mode 2 disaggregation).
+   *Result:* 13/13 tests pass in 3.75 s.
+   *Specific Test Added:* `test_selective_accuracy_accounting_uses_independent_numerators` proves that whenever a correct prediction is abstained, selective accuracy and overall accuracy use separate numerators ($1/2 = 50\%$ vs flawed $2/2 = 100\%$).
 2. **JavaScript / TypeScript Test Suite:**
    ```bash
    npm test
    ```
-   *Result:* 186/186 tests pass across 13 test suites in 12.2 s.
+   *Result:* 186/186 tests pass across 13 test suites in 12.4 s.
 3. **TypeScript Typecheck:**
    ```bash
    npm run typecheck
@@ -238,18 +271,18 @@ The evaluation on Zenodo Set 4 was re-verified and is explicitly disclosed as a 
 
 | Gate | Requirement | Status | Evidence / Notes |
 | :--- | :--- | :---: | :--- |
-| **Gate 0** | Preservation | **PASS** | 35 `dist/` files intact; `modules/live-camera/android/build/` untouched; production weights unchanged; no APK built. |
-| **Gate 1** | Orientation & Label Use Audit | **PASS** | Traced FEN oracle influence; implemented and benchmarked Mode 1 (Oracle: 71.82%) vs Mode 2 (Image-driven: 52.62%); disclosed that Mode 1 is not autonomous. |
-| **Gate 2** | Annotation Quality Validation | **PASS** | Audited all 491 images; identified 1 non-convex corner failure; verified 26 count mismatches and 20 class misclassifications; documented CVAT `yolov8l-pose.pt` origin. |
-| **Gate 3** | Metric Clarifications | **PASS** | Mathematically defined 71.82% placement match and 11.00% piece classifier accuracy (with abstention accounting); clarified Zenodo Set 4 as historical inspected holdout. |
-| **Gate 4** | External-Set Limitations | **PASS** | FENiT distinct physical-set count formally marked UNVERIFIED; partition isolation from in-house `SET01`–`SET20` verified; zero fake physical IDs emitted. |
-| **Gate 5** | Verification & Publication | **PASS** | 186/186 Node tests pass; 12/12 Python tests pass; `tsc --noEmit` clean; documentation updated; zero dataset artifacts in Git. |
+| **Gate 0** | Preservation | **PASS** | 35 `dist/` files intact; `modules/live-camera/android/build/` untouched; production weights unchanged; no APK built or installed. |
+| **Gate 1** | Prediction Accounting Recalculation | **PASS** | Evaluated all 5,302 FENiT samples with independent numerators; corrected selective accuracy to 10.28% (370/3,599); added automated regression test for independent numerators. |
+| **Gate 2** | Oracle-Use Clarification | **PASS** | Mode 1 explicitly defined as oracle-assisted YOLO-to-FEN alignment (71.82%); Mode 2 defined as screen-space geometry baseline (52.62%); Mode 3 autonomous raw detection noted as 0%. |
+| **Gate 3** | Label-Quality Caveats | **PASS** | Documented model-assisted CVAT origin of FENiT; acknowledged label noise; clarified historical inspected status of Zenodo Set 4. |
+| **Gate 4** | External-Set Limitations | **PASS** | FENiT distinct physical-set count formally marked **UNVERIFIED**; partition isolation from in-house `SET01`–`SET20` verified; zero fake physical IDs emitted. |
+| **Gate 5** | Verification & Publication | **PASS** | 186/186 Node tests pass; 13/13 Python tests pass; `tsc --noEmit` clean; documentation updated; zero dataset artifacts in Git. |
 
 ---
 
 ## 9. Next Recommended Action
 
-With the evaluation integrity of external benchmarks fully audited, documented, and disaggregated from oracle assistance:
+With external benchmark metrics rigorously audited, corrected, and documented with separate numerators and oracle disclosures:
 1. Review git status and stage code/documentation changes.
-2. Commit and push Milestone 5.2J to `origin/main` under `AGENTS.md`.
-3. Proceed to live physical capture preparation for Set 01 when physical hardware and studio setup become available.
+2. Commit and push Milestone 5.2K to `origin/main` under `AGENTS.md`.
+3. Proceed to live physical capture preparation for Set 01 when physical hardware, studio lighting, tags, and tripod setup become available.

@@ -300,6 +300,69 @@ def resolve_image_driven_orientation(
     return np.roll(pts, -start, axis=0)
 
 
+def compute_selective_accuracy_accounting(
+    samples: List[Dict[str, Any]],
+    conf_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    margin_threshold: float = DEFAULT_MARGIN_THRESHOLD,
+) -> Dict[str, Any]:
+    """
+    Computes rigorous selective-accuracy accounting with independent numerators:
+    - Overall accuracy: overall_correct / total_samples
+    - Coverage: accepted / total_samples
+    - Abstention rate: abstained / total_samples
+    - Selective accuracy: accepted_and_correct / accepted
+    - Error rate among accepted: accepted_and_incorrect / accepted
+    - Diagnostic abstained accuracy: abstained_and_correct / abstained
+    """
+    total = len(samples)
+    overall_correct = 0
+    accepted = 0
+    abstained = 0
+    accepted_and_correct = 0
+    accepted_and_incorrect = 0
+    abstained_and_correct = 0
+    abstained_and_incorrect = 0
+
+    for s in samples:
+        conf = float(s.get("confidence", 0.0))
+        margin = float(s.get("margin", 0.0))
+        is_correct = bool(s.get("is_correct", False))
+
+        if is_correct:
+            overall_correct += 1
+
+        is_accepted = bool(conf >= conf_threshold and margin >= margin_threshold)
+        if is_accepted:
+            accepted += 1
+            if is_correct:
+                accepted_and_correct += 1
+            else:
+                accepted_and_incorrect += 1
+        else:
+            abstained += 1
+            if is_correct:
+                abstained_and_correct += 1
+            else:
+                abstained_and_incorrect += 1
+
+    return {
+        "total_samples": total,
+        "overall_correct": overall_correct,
+        "overall_accuracy": round((overall_correct / total), 4) if total > 0 else 0.0,
+        "accepted_count": accepted,
+        "coverage": round((accepted / total), 4) if total > 0 else 0.0,
+        "abstention_count": abstained,
+        "abstention_rate": round((abstained / total), 4) if total > 0 else 0.0,
+        "accepted_and_correct": accepted_and_correct,
+        "accepted_and_incorrect": accepted_and_incorrect,
+        "selective_accuracy": round((accepted_and_correct / accepted), 4) if accepted > 0 else 0.0,
+        "error_rate_among_accepted": round((accepted_and_incorrect / accepted), 4) if accepted > 0 else 0.0,
+        "abstained_and_correct": abstained_and_correct,
+        "abstained_and_incorrect": abstained_and_incorrect,
+        "abstained_accuracy_diagnostic": round((abstained_and_correct / abstained), 4) if abstained > 0 else 0.0,
+    }
+
+
 def extract_observation_crops(
     rectified_board: np.ndarray,
     placement: str,
@@ -319,7 +382,12 @@ def extract_observation_crops(
 
     correct_piece_predictions = 0
     total_occupied_evaluated = 0
+    accepted_count = 0
     abstain_count = 0
+    accepted_and_correct = 0
+    accepted_and_incorrect = 0
+    abstained_and_correct = 0
+    abstained_and_incorrect = 0
 
     for r_idx in range(8):
         rank_num = 8 - r_idx
@@ -346,6 +414,7 @@ def extract_observation_crops(
             pred_conf = None
             pred_margin = None
             is_correct = None
+            is_accepted = None
 
             if is_occupied:
                 piece_color = "white" if ground_truth_char.isupper() else "black"
@@ -374,8 +443,20 @@ def extract_observation_crops(
                     is_correct = bool(pred_type == piece_type)
                     if is_correct:
                         correct_piece_predictions += 1
-                    if conf < DEFAULT_CONFIDENCE_THRESHOLD or margin < DEFAULT_MARGIN_THRESHOLD:
+
+                    is_accepted = bool(conf >= DEFAULT_CONFIDENCE_THRESHOLD and margin >= DEFAULT_MARGIN_THRESHOLD)
+                    if is_accepted:
+                        accepted_count += 1
+                        if is_correct:
+                            accepted_and_correct += 1
+                        else:
+                            accepted_and_incorrect += 1
+                    else:
                         abstain_count += 1
+                        if is_correct:
+                            abstained_and_correct += 1
+                        else:
+                            abstained_and_incorrect += 1
 
             crops.append(
                 {
@@ -389,6 +470,7 @@ def extract_observation_crops(
                     "predicted_type": pred_type,
                     "confidence": pred_conf,
                     "margin": pred_margin,
+                    "is_accepted": is_accepted,
                     "is_prediction_correct": is_correct,
                 }
             )
@@ -396,11 +478,24 @@ def extract_observation_crops(
     eval_stats = {
         "occupied_squares": total_occupied_evaluated,
         "correct_predictions": correct_piece_predictions,
-        "accuracy": round(
+        "overall_accuracy": round(
             (correct_piece_predictions / total_occupied_evaluated) if total_occupied_evaluated > 0 else 0.0,
             4,
         ),
+        "accepted_count": accepted_count,
         "abstain_count": abstain_count,
+        "accepted_and_correct": accepted_and_correct,
+        "accepted_and_incorrect": accepted_and_incorrect,
+        "abstained_and_correct": abstained_and_correct,
+        "abstained_and_incorrect": abstained_and_incorrect,
+        "selective_accuracy": round(
+            (accepted_and_correct / accepted_count) if accepted_count > 0 else 0.0,
+            4,
+        ),
+        "error_rate_among_accepted": round(
+            (accepted_and_incorrect / accepted_count) if accepted_count > 0 else 0.0,
+            4,
+        ),
     }
 
     return crops, eval_stats
@@ -695,13 +790,29 @@ def main() -> int:
 
         total_pieces_eval = sum(r["deployed_classifier_eval"]["occupied_squares"] for r in processed_recs)
         total_pieces_correct = sum(r["deployed_classifier_eval"]["correct_predictions"] for r in processed_recs)
+        total_accepted = sum(r["deployed_classifier_eval"].get("accepted_count", 0) for r in processed_recs)
         total_abstentions = sum(r["deployed_classifier_eval"]["abstain_count"] for r in processed_recs)
+        total_accepted_and_correct = sum(r["deployed_classifier_eval"].get("accepted_and_correct", 0) for r in processed_recs)
+        total_accepted_and_incorrect = sum(r["deployed_classifier_eval"].get("accepted_and_incorrect", 0) for r in processed_recs)
+        total_abstained_and_correct = sum(r["deployed_classifier_eval"].get("abstained_and_correct", 0) for r in processed_recs)
+        total_abstained_and_incorrect = sum(r["deployed_classifier_eval"].get("abstained_and_incorrect", 0) for r in processed_recs)
+
         overall_piece_acc = (
             (total_pieces_correct / total_pieces_eval * 100.0) if total_pieces_eval > 0 else 0.0
         )
-        non_abstained_acc = (
-            (total_pieces_correct / (total_pieces_eval - total_abstentions) * 100.0)
-            if (total_pieces_eval - total_abstentions) > 0
+        selective_acc = (
+            (total_accepted_and_correct / total_accepted * 100.0)
+            if total_accepted > 0
+            else 0.0
+        )
+        error_rate_accepted = (
+            (total_accepted_and_incorrect / total_accepted * 100.0)
+            if total_accepted > 0
+            else 0.0
+        )
+        abstained_diag_acc = (
+            (total_abstained_and_correct / total_abstentions * 100.0)
+            if total_abstentions > 0
             else 0.0
         )
 
@@ -722,10 +833,15 @@ def main() -> int:
 
         print("\n--- Deployed Piece Classifier Statistics (src/vision/pieceModelWeights.ts) ---")
         print(f"Total Occupied Squares Evaluated:   {total_pieces_eval}")
-        print(f"Correct Piece Predictions:          {total_pieces_correct}")
-        print(f"Abstentions (conf < 0.60 | marg):   {total_abstentions} ({total_abstentions/total_pieces_eval*100:.2f}%)")
-        print(f"Overall Deployed HOG Accuracy:      {overall_piece_acc:.2f}% ({total_pieces_correct}/{total_pieces_eval})")
-        print(f"Coverage-Filtered Accuracy:         {non_abstained_acc:.2f}% ({total_pieces_correct}/{total_pieces_eval - total_abstentions})")
+        print(f"Overall Top-1 Correct:              {total_pieces_correct} (overall accuracy: {overall_piece_acc:.2f}%)")
+        print(f"Accepted Predictions (Coverage):    {total_accepted}/{total_pieces_eval} ({total_accepted/total_pieces_eval*100:.2f}%)")
+        print(f"Abstained Predictions (Rate):       {total_abstentions}/{total_pieces_eval} ({total_abstentions/total_pieces_eval*100:.2f}%)")
+        print(f"Accepted & Correct (Numerator):     {total_accepted_and_correct}")
+        print(f"Accepted & Incorrect:               {total_accepted_and_incorrect}")
+        print(f"Selective Accuracy (Correct/Accepted): {selective_acc:.2f}% ({total_accepted_and_correct}/{total_accepted})")
+        print(f"Error Rate among Accepted:          {error_rate_accepted:.2f}% ({total_accepted_and_incorrect}/{total_accepted})")
+        print(f"Abstained Correct (Diagnostic Only): {total_abstained_and_correct}/{total_abstentions} ({abstained_diag_acc:.2f}%)")
+        print(f"[METRIC CORRECTION: Milestone 5.2K corrects selective accuracy numerator from {total_pieces_correct} to {total_accepted_and_correct}. True selective accuracy is {selective_acc:.2f}%, not 16.20%.]")
         print(f"Total Derived Square Crops:         {total_crops} (64 per full board outside Git)")
 
     return 0
