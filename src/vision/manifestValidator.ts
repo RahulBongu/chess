@@ -8,6 +8,7 @@ export type PieceColor = 'white' | 'black' | 'none';
 export type CameraAngle = 'zenith' | 'white_perspective' | 'black_perspective' | 'lateral_flank';
 export type LightingSetup = 'diffuse_daylight' | 'overhead_specular' | 'directional_oblique';
 export type CropType = 'isolated_piece' | 'empty_square' | 'full_board_context' | 'full_board_raw';
+export type ExtractionMode = 'full_board_context' | 'occupied_target_only' | 'empty_board_grid';
 export type OcclusionLevel = 'none' | 'partial' | 'severe';
 export type SplitPartition = 'train' | 'val' | 'holdout';
 export type PermissionStatus = 'verified_author_consent' | 'verified_owner_release';
@@ -31,6 +32,7 @@ export interface CaptureManifestRecord {
   original_image_path: string;
   derived_crop_path: string;
   crop_type: CropType;
+  extraction_mode?: ExtractionMode | null;
   occlusion_level: OcclusionLevel;
   photographer: string;
   rights_holder: string;
@@ -60,6 +62,10 @@ export interface ManifestSummary {
   cropsByType: Record<CropType, number>;
   cropsBySplit: Record<SplitPartition, number>;
   setSplitMap: Record<string, SplitPartition>;
+  /** Distinct source photographs represented in the manifest. */
+  sourcePhotographs: number;
+  /** Derived crop records, equal to totalRecords. */
+  derivedCrops: number;
 }
 
 export interface ManifestValidationResult {
@@ -99,6 +105,12 @@ const VALID_CROP_TYPES = new Set<CropType>([
   'full_board_context',
   'full_board_raw',
 ]);
+
+const EXTRACTION_MODE_TO_CROP_TYPE: Record<ExtractionMode, CropType> = {
+  full_board_context: 'full_board_context',
+  occupied_target_only: 'isolated_piece',
+  empty_board_grid: 'empty_square',
+};
 
 const VALID_OCCLUSION_LEVELS = new Set<OcclusionLevel>(['none', 'partial', 'severe']);
 
@@ -311,6 +323,54 @@ export function validateFenPlacement(fen: string): boolean {
   return validatePlacementOnly(placement).valid;
 }
 
+const CHAR_TO_PIECE_TYPE: Record<string, PieceType> = {
+  P: 'pawn',
+  N: 'knight',
+  B: 'bishop',
+  R: 'rook',
+  Q: 'queen',
+  K: 'king',
+  p: 'pawn',
+  n: 'knight',
+  b: 'bishop',
+  r: 'rook',
+  q: 'queen',
+  k: 'king',
+};
+
+/**
+ * Returns the occupant of one square from an already-validated placement string.
+ */
+export function getPlacementOccupant(
+  placement: string,
+  square: string
+): { pieceChar: string; pieceType: PieceType; pieceColor: PieceColor } | null {
+  const ranks = placement.trim().split('/');
+  if (ranks.length !== 8 || !SQUARE_REGEX.test(square)) return null;
+
+  const fileIndex = square.charCodeAt(0) - 97;
+  const rank = parseInt(square[1], 10);
+  const rankStr = ranks[8 - rank];
+  let index = 0;
+
+  for (const ch of rankStr) {
+    if (ch >= '1' && ch <= '8') {
+      index += parseInt(ch, 10);
+      continue;
+    }
+    if (index === fileIndex) {
+      if (!'pnbrqkPNBRQK'.includes(ch)) return null;
+      return {
+        pieceChar: ch,
+        pieceType: CHAR_TO_PIECE_TYPE[ch],
+        pieceColor: 'PNBRQK'.includes(ch) ? 'white' : 'black',
+      };
+    }
+    index++;
+  }
+  return null;
+}
+
 /**
  * Validates a single manifest record.
  */
@@ -476,6 +536,76 @@ export function validateManifestRecord(
     }
   }
 
+  // Extraction mode semantics (Milestone 5.2H)
+  const extractionMode = record.extraction_mode;
+  if (extractionMode !== undefined && extractionMode !== null && String(extractionMode).trim() !== '') {
+    const expectedCropType = EXTRACTION_MODE_TO_CROP_TYPE[extractionMode as ExtractionMode];
+    if (!expectedCropType) {
+      errors.push(`${prefix} Unknown 'extraction_mode': '${extractionMode}'.`);
+    } else if (record.crop_type !== expectedCropType) {
+      errors.push(
+        `${prefix} 'extraction_mode' '${extractionMode}' requires crop_type '${expectedCropType}', got '${record.crop_type}'.`
+      );
+    }
+  }
+
+  // Verify square labels against the supplied placement/FEN occupancy.
+  let occupancyPlacement: string | null = null;
+  if (record.piece_placement && validatePlacementOnly(record.piece_placement).valid) {
+    occupancyPlacement = record.piece_placement.trim();
+  } else if (record.board_fen) {
+    const fenTokens = record.board_fen.trim().split(/\s+/);
+    if (fenTokens.length === 6 && validatePlacementOnly(fenTokens[0]).valid) {
+      occupancyPlacement = fenTokens[0];
+    } else if (fenTokens.length === 1 && validatePlacementOnly(fenTokens[0]).valid) {
+      occupancyPlacement = fenTokens[0];
+    }
+  }
+
+  if (occupancyPlacement) {
+    const pieceCounts = countPiecesInPlacement(occupancyPlacement);
+    if (extractionMode === 'occupied_target_only' && pieceCounts.totalPieces !== 1) {
+      errors.push(
+        `${prefix} 'occupied_target_only' requires exactly one occupied square, got ${pieceCounts.totalPieces}.`
+      );
+    }
+    if (extractionMode === 'empty_board_grid' && pieceCounts.totalPieces !== 0) {
+      errors.push(
+        `${prefix} 'empty_board_grid' requires zero occupied squares, got ${pieceCounts.totalPieces}.`
+      );
+    }
+
+    if (
+      record.crop_type !== 'full_board_raw' &&
+      record.square_coord &&
+      SQUARE_REGEX.test(record.square_coord)
+    ) {
+      const occupant = getPlacementOccupant(occupancyPlacement, record.square_coord);
+      if (record.piece_type === 'empty') {
+        if (occupant) {
+          errors.push(
+            `${prefix} '${record.square_coord}' is labelled empty but placement contains '${occupant.pieceChar}'.`
+          );
+        }
+      } else if (!occupant) {
+        errors.push(
+          `${prefix} '${record.square_coord}' is labelled ${record.piece_type} but placement says it is empty.`
+        );
+      } else {
+        if (occupant.pieceType !== record.piece_type) {
+          errors.push(
+            `${prefix} '${record.square_coord}' is labelled ${record.piece_type} but placement contains ${occupant.pieceType}.`
+          );
+        }
+        if (occupant.pieceColor !== record.piece_color) {
+          errors.push(
+            `${prefix} '${record.square_coord}' is labelled ${record.piece_color} but placement contains ${occupant.pieceColor}.`
+          );
+        }
+      }
+    }
+  }
+
   // Camera angle & lighting
   if (!VALID_CAMERA_ANGLES.has(record.camera_angle)) {
     errors.push(`${prefix} Unknown 'camera_angle': '${record.camera_angle}'.`);
@@ -545,6 +675,9 @@ export function validateManifestCollection(
   const pieceSplitMap: Record<string, SplitPartition> = {};
   const tagPieceMap: Record<string, string> = {};
   const tagSplitMap: Record<string, SplitPartition> = {};
+  const sourcePathsSeen = new Set<string>();
+  const sceneSourceMap = new Map<string, string>();
+  const sourceSceneMap = new Map<string, string>();
 
   const cropsByType: Record<CropType, number> = {
     isolated_piece: 0,
@@ -572,6 +705,8 @@ export function validateManifestCollection(
         cropsByType,
         cropsBySplit,
         setSplitMap,
+        sourcePhotographs: 0,
+        derivedCrops: 0,
       },
     };
   }
@@ -584,6 +719,28 @@ export function validateManifestCollection(
     if (record) {
       if (record.set_id) setsSeen.add(record.set_id);
       if (record.scene_id) scenesSeen.add(record.scene_id);
+      if (record.original_image_path) {
+        sourcePathsSeen.add(record.original_image_path);
+        if (record.scene_id) {
+          const mappedSource = sceneSourceMap.get(record.scene_id);
+          if (mappedSource && mappedSource !== record.original_image_path) {
+            errors.push(
+              `[Scene Source Conflict] Scene '${record.scene_id}' maps to multiple source images: '${mappedSource}' and '${record.original_image_path}'.`
+            );
+          } else {
+            sceneSourceMap.set(record.scene_id, record.original_image_path);
+          }
+
+          const mappedScene = sourceSceneMap.get(record.original_image_path);
+          if (mappedScene && mappedScene !== record.scene_id) {
+            errors.push(
+              `[Source Scene Conflict] Source image '${record.original_image_path}' maps to multiple scenes: '${mappedScene}' and '${record.scene_id}'.`
+            );
+          } else {
+            sourceSceneMap.set(record.original_image_path, record.scene_id);
+          }
+        }
+      }
       if (record.piece_instance_id && record.piece_instance_id !== 'EMPTY') {
         pieceInstancesSeen.add(record.piece_instance_id);
       }
@@ -673,6 +830,8 @@ export function validateManifestCollection(
       cropsByType,
       cropsBySplit,
       setSplitMap,
+      sourcePhotographs: sourcePathsSeen.size,
+      derivedCrops: records.length,
     },
   };
 }

@@ -1,7 +1,7 @@
 # Chess Piece Recognition: Dataset Provenance & Licensing Policy
 
 Date: 2026-11-02  
-Milestone: 5.2G — Capture Preflight, Workspace Setup, and Set 01 Pilot Protocol  
+Milestone: 5.2H — Crop Extraction Semantics and Pilot Accounting Audit  
 Target App: AI Chess Navigator (Offline Mobile Application)  
 Repository: `https://github.com/RahulBongu/chess.git`
 
@@ -53,16 +53,16 @@ AI Chess Navigator operates under strict open-source (MIT), offline, and privacy
 | **LiveChess2FEN** | GitHub (`davidmallasen/LiveChess2FEN`) | AGPL-3.0 | Academic thesis research. Full pipeline with trained models. | **REJECTED (Copyleft Hazard)** | **GNU Affero GPL v3.0** is viral copyleft and incompatible with MIT distribution. |
 | **ChessCog & ChessRender360** | GitHub / Zenodo | MIT / CC BY 4.0 | 3D Blender computer graphics renders (4,888 and 10,000 renders respectively). | **REJECTED (Synthetic Only)** | Does not provide real physical piece imagery or solve the sim-to-real domain gap. |
 | **Synthetic 3D Staunton Renders (In-House)** | Procedural Raytracer / Blender | **MIT / CC0 (Author-Owned)** | Procedural 3D Staunton meshes based on Nathaniel Cook's 1849 public domain blueprints. | **APPROVED (Primary Synthetic Training Source)** | 100% clean lineage. Zero third-party copyright claims. Fully reproducible and license-safe. |
-| **Author-Owned Physical Capture Protocol (Milestone 5.2G Plan A)** | Planned In-House Protocol (`docs/PHYSICAL_CAPTURE_PROTOCOL.md`) | **Data: CC0-1.0; Code: MIT** (Strictly Decoupled) | 20 distinct physical Staunton sets across 4 style categories: 640 distinct physical piece instances, 28 scenes/set (560 full-board scenes = 35,840 context crops), 640 instance ref photos, 15,360 sweep photos, and 60 empty-board photos (1,280 canonical empty crops, 3,840 total empty crops). | **RECOMMENDED FOR FUTURE PHYSICAL RECOGNITION** | Bridges the 14-set global diversity gap with 100% auditable copyright ownership, bijective physical tag mapping, and machine-validated manifest. |
+| **Author-Owned Physical Capture Protocol (Milestone 5.2H Plan A)** | Planned In-House Protocol (`docs/PHYSICAL_CAPTURE_PROTOCOL.md`) | **Data: CC0-1.0; Code: MIT** (Strictly Decoupled) | 20 distinct physical Staunton sets across 4 style categories: 640 distinct physical piece instances, 28 scenes/set (560 full-board scenes = 35,840 context crops), 640 instance ref photos, 15,360 sweep photos, and 60 empty-board photos (1,280 canonical empty crops, 3,840 total empty crops). | **RECOMMENDED FOR FUTURE PHYSICAL RECOGNITION** | Bridges the 14-set global diversity gap with 100% auditable copyright ownership, bijective physical tag mapping, and machine-validated manifest. |
 
 ---
 
 ## 4. Current Repository State & Blocker Disclosure
 
-**Status as of Milestone 5.2G:**
+**Status as of Milestone 5.2H:**
 1. **No External Real-World Dataset Packaged:** In accordance with the repository's strict clean-room policy, no unverified real-image datasets have been imported or committed to `C:\dev\chess`.
 2. **Prototype Baseline:** The Phase 4.3A prototype implementation (`classifyPiece.ts`) includes the mathematical feature extractor (288-bin HOG), scratch-buffer memory manager, model loader, and evaluation harness.
 3. **Synthetic-Only Evaluation:** All unit tests and training demonstrations operate strictly on synthetic fixtures and procedural Staunton silhouettes. Results are labeled **synthetic-only**.
-4. **Durable Capture Workspace & Crop Extractor Established:** In Milestone 5.2G, established a durable private capture workspace at `C:\dev\chess-capture-workspace\` outside Git tracking. Implemented the offline square-crop extraction engine in TypeScript (`src/vision/cropExtractor.ts`) and Python (`scripts/extract_square_crops.py`), verified across 179 unit tests.
-5. **Set 01 Preflight Verified; Physical Pilot Pending:** Set 01 physical prerequisites (public domain Staunton design, author property release, 32 archival underside micro-tags, optical rig, CPL filter) are verified and operational. Live physical pilot capture execution is reported as **PENDING** physical hardware collection, with zero synthetic substitutions.
+4. **Durable Capture Workspace & Explicit Crop Modes:** In Milestone 5.2H, the private capture workspace remains at `C:\dev\chess-capture-workspace\` outside Git tracking. The TypeScript engine (`src/vision/cropExtractor.ts`) and Python CLI (`scripts/extract_square_crops.py`) now share three explicit modes: 64 crops for full-board context, 1 target crop for isolated sweep/reference photographs, and 64 empty crops for empty-board references. The Python CLI no longer silently resizes non-800x800 inputs, and full-board scenes require an explicit square-to-piece-instance map rather than invented `_01` identities.
+5. **Set 01 Preflight Documented; Physical Pilot Pending:** The protocol documents the public-domain Staunton design, author property release, 32 archival underside tags, optical rig, and CPL filter. The durable workspace currently contains **zero Set 01 source photographs and zero derived crops**, so the live physical pilot remains **PENDING** live studio capture. No synthetic fixture has been substituted for physical evidence.
 6. **Production Model Training Gate:** Final production weights ($\ge 88.0\%$ Top-1 on diverse physical sets) remain blocked until physical piece collection is executed on hardware. Production weights in `src/vision/pieceModelWeights.ts` remain strictly **UNCHANGED**.

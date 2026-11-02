@@ -377,51 +377,64 @@ describe('offline capture manifest validator [Milestone 5.2D]', () => {
         scene_id: 'SET01_SCENE_01',
         camera_angle: 'zenith',
         lighting_setup: 'diffuse_daylight',
+        original_image_path: 'raw/SET01/cat1_start_zenith.jpg',
         derived_crop_path: 'crops/train/SET01/cat1_c01_e1.png',
+        extraction_mode: 'full_board_context',
       }),
       // Category 2: Full-board starting position oblique (White perspective, Diffuse)
       createValidContextRecord({
         scene_id: 'SET01_SCENE_04',
         camera_angle: 'white_perspective',
         lighting_setup: 'diffuse_daylight',
+        original_image_path: 'raw/SET01/cat2_start_white.jpg',
         derived_crop_path: 'crops/train/SET01/cat2_c04_e1.png',
+        extraction_mode: 'full_board_context',
       }),
       // Category 3: Full-board Position 1 (Opening Transition, 32 pieces)
       createValidContextRecord({
         scene_id: 'SET01_SCENE_13',
         board_fen: 'r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 4 7',
         piece_placement: 'r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1',
-        derived_crop_path: 'crops/train/SET01/cat3_pos1_e1.png',
+        square_coord: 'g1',
+        original_image_path: 'raw/SET01/cat3_pos1_white.jpg',
+        derived_crop_path: 'crops/train/SET01/cat3_pos1_g1.png',
+        extraction_mode: 'full_board_context',
       }),
       // Category 4: Full-board Position 2 (Tactical Middlegame, 25 pieces)
       createValidContextRecord({
         scene_id: 'SET01_SCENE_17',
         board_fen: 'r3r1k1/ppqbbppp/2p2n2/8/3N4/2PB4/PP1Q1PPP/R3R1K1 w - - 4 16',
         piece_placement: 'r3r1k1/ppqbbppp/2p2n2/8/3N4/2PB4/PP1Q1PPP/R3R1K1',
+        original_image_path: 'raw/SET01/cat4_pos2_white.jpg',
         derived_crop_path: 'crops/train/SET01/cat4_pos2_d2.png',
         piece_instance_id: 'SET01_W_Q01',
         piece_type: 'queen',
         square_coord: 'd2',
+        extraction_mode: 'full_board_context',
       }),
       // Category 5: Full-board Position 3 (Asymmetric Castling, 22 pieces)
       createValidContextRecord({
         scene_id: 'SET01_SCENE_21',
         board_fen: '3r1rk1/pb1n1p1p/1p4p1/2p5/2P2PP1/P1N1B2P/1P6/2KR3R w - - 0 20',
         piece_placement: '3r1rk1/pb1n1p1p/1p4p1/2p5/2P2PP1/P1N1B2P/1P6/2KR3R',
+        original_image_path: 'raw/SET01/cat5_pos3_white.jpg',
         derived_crop_path: 'crops/train/SET01/cat5_pos3_c1.png',
         piece_instance_id: 'SET01_W_K01',
         piece_type: 'king',
         square_coord: 'c1',
+        extraction_mode: 'full_board_context',
       }),
       // Category 6: Full-board Position 4 (Simplified Endgame, 12 pieces)
       createValidContextRecord({
         scene_id: 'SET01_SCENE_25',
         board_fen: '4r3/3R1p2/5kp1/p6p/P6P/5KP1/5P2/8 w - - 2 34',
         piece_placement: '4r3/3R1p2/5kp1/p6p/P6P/5KP1/5P2/8',
+        original_image_path: 'raw/SET01/cat6_pos4_white.jpg',
         derived_crop_path: 'crops/train/SET01/cat6_pos4_d7.png',
         piece_instance_id: 'SET01_W_R01',
         piece_type: 'rook',
         square_coord: 'd7',
+        extraction_mode: 'full_board_context',
       }),
       // Category 7: Sub-phase A1 Piece Registration (Queen on d4)
       createValidIsolatedRecord({
@@ -429,7 +442,9 @@ describe('offline capture manifest validator [Milestone 5.2D]', () => {
         piece_instance_id: 'SET01_W_Q01',
         piece_type: 'queen',
         square_coord: 'd4',
+        original_image_path: 'raw/SET01/cat7_ref_w_q01.jpg',
         derived_crop_path: 'crops/train/SET01/cat7_ref_w_q01.png',
+        extraction_mode: 'occupied_target_only',
       }),
       // Category 8: Sub-phase A1 Piece Registration (King on e4)
       createValidIsolatedRecord({
@@ -437,7 +452,9 @@ describe('offline capture manifest validator [Milestone 5.2D]', () => {
         piece_instance_id: 'SET01_W_K01',
         piece_type: 'king',
         square_coord: 'e4',
+        original_image_path: 'raw/SET01/cat8_ref_w_k01.jpg',
         derived_crop_path: 'crops/train/SET01/cat8_ref_w_k01.png',
+        extraction_mode: 'occupied_target_only',
       }),
       // Category 9: Sub-phase A2 Sweep Instance (Pawn on e4)
       createValidIsolatedRecord({
@@ -445,12 +462,16 @@ describe('offline capture manifest validator [Milestone 5.2D]', () => {
         piece_instance_id: 'SET01_W_P01',
         piece_type: 'pawn',
         square_coord: 'e4',
+        original_image_path: 'raw/SET01/cat9_sweep_w_p01_e4.jpg',
         derived_crop_path: 'crops/train/SET01/cat9_sweep_w_p01_e4.png',
+        extraction_mode: 'occupied_target_only',
       }),
       // Category 10: Sub-phase A3 Empty Square Reference (Empty on d4)
       createValidEmptyRecord({
         scene_id: 'SET01_EMPTY_D4',
+        original_image_path: 'raw/SET01/cat10_empty_d4.jpg',
         derived_crop_path: 'crops/train/SET01/cat10_empty_d4.png',
+        extraction_mode: 'empty_board_grid',
       }),
     ];
 
@@ -458,6 +479,8 @@ describe('offline capture manifest validator [Milestone 5.2D]', () => {
     assert.equal(result.valid, true, `Pilot manifest validation failed: ${result.errors.join('; ')}`);
     assert.equal(result.errors.length, 0);
     assert.equal(result.summary.totalRecords, 10);
+    assert.equal(result.summary.sourcePhotographs, 10);
+    assert.equal(result.summary.derivedCrops, 10);
     assert.equal(result.summary.distinctSets.length, 1);
     assert.equal(result.summary.distinctSets[0], 'SET01');
     assert.equal(result.summary.cropsByType.full_board_context, 6);
@@ -603,5 +626,83 @@ describe('offline capture manifest validator [Milestone 5.2D]', () => {
     const resCollection2 = validateManifestCollection([recTrain, recVal]);
     assert.equal(resCollection2.valid, false);
     assert.ok(resCollection2.errors.some((e) => e.includes('[Tag Leakage Violation]')));
+  });
+
+  it('19. enforces extraction-mode semantics and square labels against placement occupancy [Milestone 5.2H]', () => {
+    const modeMismatch = createValidContextRecord({
+      extraction_mode: 'occupied_target_only',
+    });
+    const modeErrors = validateManifestRecord(modeMismatch);
+    assert.ok(modeErrors.some((e) => e.includes("requires crop_type 'isolated_piece'")));
+
+    const labelMismatch = createValidContextRecord({
+      square_coord: 'e4',
+      piece_instance_id: 'SET01_W_K01',
+      piece_type: 'king',
+      physical_tag_id: 'S01-W-K01',
+      extraction_mode: 'full_board_context',
+    });
+    const labelErrors = validateManifestRecord(labelMismatch);
+    assert.ok(labelErrors.some((e) => e.includes("'e4' is labelled king but placement says it is empty")));
+
+    const emptyLabelMismatch = createValidEmptyRecord({
+      square_coord: 'e2',
+      piece_placement: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR',
+      board_fen: null,
+      extraction_mode: 'empty_board_grid',
+    });
+    const emptyErrors = validateManifestRecord(emptyLabelMismatch);
+    assert.ok(emptyErrors.some((e) => e.includes("is labelled empty but placement contains")));
+
+    const ambiguousTarget = createValidIsolatedRecord({
+      piece_placement: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR',
+      board_fen: null,
+      extraction_mode: 'occupied_target_only',
+    });
+    const ambiguousErrors = validateManifestRecord(ambiguousTarget);
+    assert.ok(ambiguousErrors.some((e) => e.includes('exactly one occupied square')));
+  });
+
+  it('20. tracks source photographs separately from derived crops and rejects scene/source conflicts [Milestone 5.2H]', () => {
+    const e1 = createValidContextRecord({
+      original_image_path: 'raw/SET01/shared_start.jpg',
+      scene_id: 'SET01_SCENE_SHARED',
+      square_coord: 'e1',
+      piece_instance_id: 'SET01_W_K01',
+      piece_type: 'king',
+      derived_crop_path: 'crops/train/SET01/shared_e1.png',
+    });
+    const d1 = createValidContextRecord({
+      original_image_path: 'raw/SET01/shared_start.jpg',
+      scene_id: 'SET01_SCENE_SHARED',
+      square_coord: 'd1',
+      piece_instance_id: 'SET01_W_Q01',
+      piece_type: 'queen',
+      derived_crop_path: 'crops/train/SET01/shared_d1.png',
+    });
+
+    const valid = validateManifestCollection([e1, d1]);
+    assert.equal(valid.valid, true, valid.errors.join('; '));
+    assert.equal(valid.summary.sourcePhotographs, 1);
+    assert.equal(valid.summary.derivedCrops, 2);
+    assert.equal(valid.summary.totalRecords, 2);
+
+    const conflictingScene = createValidContextRecord({
+      original_image_path: 'raw/SET01/other_start.jpg',
+      scene_id: 'SET01_SCENE_SHARED',
+      derived_crop_path: 'crops/train/SET01/other_e1.png',
+    });
+    const sceneConflict = validateManifestCollection([e1, conflictingScene]);
+    assert.equal(sceneConflict.valid, false);
+    assert.ok(sceneConflict.errors.some((e) => e.includes('[Scene Source Conflict]')));
+
+    const conflictingSource = createValidContextRecord({
+      original_image_path: 'raw/SET01/shared_start.jpg',
+      scene_id: 'SET01_SCENE_OTHER',
+      derived_crop_path: 'crops/train/SET01/other_scene_e1.png',
+    });
+    const sourceConflict = validateManifestCollection([e1, conflictingSource]);
+    assert.equal(sourceConflict.valid, false);
+    assert.ok(sourceConflict.errors.some((e) => e.includes('[Source Scene Conflict]')));
   });
 });

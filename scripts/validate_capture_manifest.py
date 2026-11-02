@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -44,6 +45,12 @@ VALID_PIECE_COLORS = {"white", "black", "none"}
 VALID_ANGLES = {"zenith", "white_perspective", "black_perspective", "lateral_flank"}
 VALID_LIGHTING = {"diffuse_daylight", "overhead_specular", "directional_oblique"}
 VALID_CROP_TYPES = {"isolated_piece", "empty_square", "full_board_context", "full_board_raw"}
+VALID_EXTRACTION_MODES = {"full_board_context", "occupied_target_only", "empty_board_grid"}
+EXTRACTION_MODE_TO_CROP_TYPE = {
+    "full_board_context": "full_board_context",
+    "occupied_target_only": "isolated_piece",
+    "empty_board_grid": "empty_square",
+}
 VALID_OCCLUSIONS = {"none", "partial", "severe"}
 VALID_SPLITS = {"train", "val", "holdout"}
 VALID_PERMISSIONS = {"verified_author_consent", "verified_owner_release"}
@@ -57,6 +64,21 @@ TYPE_CHAR_MAP = {
     "queen": "Q",
     "king": "K",
     "empty": "E",
+}
+
+CHAR_TO_PIECE_TYPE = {
+    "p": "pawn",
+    "P": "pawn",
+    "n": "knight",
+    "N": "knight",
+    "b": "bishop",
+    "B": "bishop",
+    "r": "rook",
+    "R": "rook",
+    "q": "queen",
+    "Q": "queen",
+    "k": "king",
+    "K": "king",
 }
 
 
@@ -184,6 +206,32 @@ def count_pieces_in_placement(placement: str) -> Dict[str, Any]:
     }
 
 
+def get_placement_occupant(placement: str, square: str) -> Dict[str, str] | None:
+    ranks = placement.strip().split("/")
+    if len(ranks) != 8 or not SQUARE_REGEX.match(square):
+        return None
+
+    file_index = ord(square[0]) - 97
+    rank = int(square[1])
+    rank_str = ranks[8 - rank]
+    index = 0
+
+    for ch in rank_str:
+        if ch.isdigit():
+            index += int(ch)
+            continue
+        if index == file_index:
+            if ch not in "pnbrqkPNBRQK":
+                return None
+            return {
+                "piece_char": ch,
+                "piece_type": CHAR_TO_PIECE_TYPE[ch],
+                "piece_color": "white" if ch.isupper() else "black",
+            }
+        index += 1
+    return None
+
+
 def validate_record(r: Dict[str, Any], idx: int) -> List[str]:
     errors = []
     prefix = f"[Record #{idx} Set:{r.get('set_id', 'UNKNOWN')} Piece:{r.get('piece_instance_id', 'UNKNOWN')}]"
@@ -285,6 +333,70 @@ def validate_record(r: Dict[str, Any], idx: int) -> List[str]:
         if not valid_place:
             errors.append(f"{prefix} Invalid standalone 'piece_placement': {place_err}")
 
+    # Extraction mode and square-label consistency (Milestone 5.2H)
+    extraction_mode = str(r.get("extraction_mode", "")).strip()
+    if extraction_mode:
+        if extraction_mode not in VALID_EXTRACTION_MODES:
+            errors.append(f"{prefix} Unknown 'extraction_mode': '{extraction_mode}'")
+        elif crop_type != EXTRACTION_MODE_TO_CROP_TYPE[extraction_mode]:
+            errors.append(
+                f"{prefix} 'extraction_mode' '{extraction_mode}' requires crop_type "
+                f"'{EXTRACTION_MODE_TO_CROP_TYPE[extraction_mode]}', got '{crop_type}'."
+            )
+
+    occupancy_placement = None
+    if r.get("piece_placement"):
+        valid_place, _ = validate_placement_only(str(r["piece_placement"]))
+        if valid_place:
+            occupancy_placement = str(r["piece_placement"]).strip()
+    elif r.get("board_fen"):
+        tokens = str(r["board_fen"]).strip().split()
+        if len(tokens) == 6:
+            valid_fen, _ = validate_complete_fen(str(r["board_fen"]))
+            if valid_fen:
+                occupancy_placement = tokens[0]
+        elif len(tokens) == 1:
+            valid_place, _ = validate_placement_only(tokens[0])
+            if valid_place:
+                occupancy_placement = tokens[0]
+
+    if occupancy_placement:
+        counts = count_pieces_in_placement(occupancy_placement)
+        if extraction_mode == "occupied_target_only" and counts["total_pieces"] != 1:
+            errors.append(
+                f"{prefix} 'occupied_target_only' requires exactly one occupied square, "
+                f"got {counts['total_pieces']}."
+            )
+        if extraction_mode == "empty_board_grid" and counts["total_pieces"] != 0:
+            errors.append(
+                f"{prefix} 'empty_board_grid' requires zero occupied squares, "
+                f"got {counts['total_pieces']}."
+            )
+
+        if crop_type != "full_board_raw" and SQUARE_REGEX.match(square):
+            occupant = get_placement_occupant(occupancy_placement, square)
+            if piece_type == "empty":
+                if occupant:
+                    errors.append(
+                        f"{prefix} '{square}' is labelled empty but placement contains "
+                        f"'{occupant['piece_char']}'."
+                    )
+            elif occupant is None:
+                errors.append(
+                    f"{prefix} '{square}' is labelled {piece_type} but placement says it is empty."
+                )
+            else:
+                if occupant["piece_type"] != piece_type:
+                    errors.append(
+                        f"{prefix} '{square}' is labelled {piece_type} but placement contains "
+                        f"{occupant['piece_type']}."
+                    )
+                if occupant["piece_color"] != piece_color:
+                    errors.append(
+                        f"{prefix} '{square}' is labelled {piece_color} but placement contains "
+                        f"{occupant['piece_color']}."
+                    )
+
     if r.get("camera_angle") not in VALID_ANGLES:
         errors.append(f"{prefix} Unknown 'camera_angle': '{r.get('camera_angle')}'")
     if r.get("lighting_setup") not in VALID_LIGHTING:
@@ -311,13 +423,19 @@ def validate_record(r: Dict[str, Any], idx: int) -> List[str]:
     return errors
 
 
-def validate_manifest(records: List[Dict[str, Any]]) -> Tuple[bool, List[str], Dict[str, Any]]:
+def validate_manifest(
+    records: List[Dict[str, Any]], check_files: bool = False
+) -> Tuple[bool, List[str], Dict[str, Any]]:
     errors: List[str] = []
     sets_seen: Set[str] = set()
     instances_seen: Set[str] = set()
     tags_seen: Set[str] = set()
     scenes_seen: Set[str] = set()
     paths_seen: Dict[str, int] = {}
+    source_paths_seen: Set[str] = set()
+    scene_source_map: Dict[str, str] = {}
+    source_scene_map: Dict[str, str] = {}
+    missing_paths_reported: Set[str] = set()
     set_split_map: Dict[str, str] = {}
     piece_split_map: Dict[str, str] = {}
     tag_piece_map: Dict[str, str] = {}
@@ -325,6 +443,7 @@ def validate_manifest(records: List[Dict[str, Any]]) -> Tuple[bool, List[str], D
 
     crops_by_type: Dict[str, int] = defaultdict(int)
     crops_by_split: Dict[str, int] = defaultdict(int)
+    crops_by_mode: Dict[str, int] = defaultdict(int)
 
     if not records:
         return False, ["Manifest is empty."], {}
@@ -337,6 +456,7 @@ def validate_manifest(records: List[Dict[str, Any]]) -> Tuple[bool, List[str], D
         split = str(r.get("split", ""))
         instance_id = str(r.get("piece_instance_id", ""))
         crop_path = str(r.get("derived_crop_path", ""))
+        source_path = str(r.get("original_image_path", ""))
         physical_tag = r.get("physical_tag_id")
 
         if set_id:
@@ -387,21 +507,56 @@ def validate_manifest(records: List[Dict[str, Any]]) -> Tuple[bool, List[str], D
             else:
                 paths_seen[crop_path] = i
 
+        if source_path:
+            source_paths_seen.add(source_path)
+            if r.get("scene_id"):
+                scene_id = str(r["scene_id"])
+                mapped_source = scene_source_map.get(scene_id)
+                if mapped_source and mapped_source != source_path:
+                    errors.append(
+                        f"[Scene Source Conflict] Scene '{scene_id}' maps to multiple source images: "
+                        f"'{mapped_source}' and '{source_path}'"
+                    )
+                else:
+                    scene_source_map[scene_id] = source_path
+
+                mapped_scene = source_scene_map.get(source_path)
+                if mapped_scene and mapped_scene != scene_id:
+                    errors.append(
+                        f"[Source Scene Conflict] Source image '{source_path}' maps to multiple scenes: "
+                        f"'{mapped_scene}' and '{scene_id}'"
+                    )
+                else:
+                    source_scene_map[source_path] = scene_id
+
+        if check_files:
+            for role, path in (("source image", source_path), ("derived crop", crop_path)):
+                if path and not os.path.isfile(path) and path not in missing_paths_reported:
+                    errors.append(f"[Missing File] {role} '{path}' does not exist.")
+                    missing_paths_reported.add(path)
+        if source_path and crop_path and source_path == crop_path:
+            errors.append(f"[Path Conflict] Source image and derived crop share path '{crop_path}'.")
+
         if r.get("scene_id"):
             scenes_seen.add(str(r["scene_id"]))
         if r.get("crop_type"):
             crops_by_type[str(r["crop_type"])] += 1
         if split:
             crops_by_split[split] += 1
+        if r.get("extraction_mode"):
+            crops_by_mode[str(r["extraction_mode"])] += 1
 
     summary = {
         "total_records": len(records),
+        "source_photographs": len(source_paths_seen),
+        "derived_crops": len(records),
         "distinct_sets": sorted(list(sets_seen)),
         "distinct_piece_instances": sorted(list(instances_seen)),
         "distinct_physical_tags": sorted(list(tags_seen)),
         "distinct_scenes": sorted(list(scenes_seen)),
         "crops_by_type": dict(crops_by_type),
         "crops_by_split": dict(crops_by_split),
+        "crops_by_extraction_mode": dict(crops_by_mode),
         "set_split_map": set_split_map,
     }
     return len(errors) == 0, errors, summary
@@ -410,6 +565,11 @@ def validate_manifest(records: List[Dict[str, Any]]) -> Tuple[bool, List[str], D
 def main():
     parser = argparse.ArgumentParser(description="Validate physical capture manifest JSONL.")
     parser.add_argument("manifest_path", help="Path to manifest JSONL file.")
+    parser.add_argument(
+        "--check-files",
+        action="store_true",
+        help="Require every original_image_path and derived_crop_path to exist on disk.",
+    )
     args = parser.parse_args()
 
     records = []
@@ -424,12 +584,14 @@ def main():
                 print(f"Error parsing JSON on line {line_no}: {e}", file=sys.stderr)
                 sys.exit(1)
 
-    valid, errors, summary = validate_manifest(records)
+    valid, errors, summary = validate_manifest(records, check_files=args.check_files)
 
     print("================================================================================")
     print("PHYSICAL CHESS CAPTURE MANIFEST VALIDATION REPORT")
     print("================================================================================")
     print(f"Total Records:             {summary.get('total_records', 0)}")
+    print(f"Source Photographs:        {summary.get('source_photographs', 0)}")
+    print(f"Derived Crops:             {summary.get('derived_crops', 0)}")
     print(f"Distinct Physical Sets:    {len(summary.get('distinct_sets', []))} {summary.get('distinct_sets', [])}")
     print(f"Distinct Piece Instances:  {len(summary.get('distinct_piece_instances', []))}")
     print(f"Distinct Physical Tags:    {len(summary.get('distinct_physical_tags', []))}")
@@ -437,6 +599,10 @@ def main():
     print("Crops by Type:")
     for ct, count in summary.get("crops_by_type", {}).items():
         print(f"  - {ct:<24}: {count}")
+    if summary.get("crops_by_extraction_mode"):
+        print("Crops by Extraction Mode:")
+        for mode, count in summary.get("crops_by_extraction_mode", {}).items():
+            print(f"  - {mode:<24}: {count}")
     print("Crops by Split:")
     for sp, count in summary.get("crops_by_split", {}).items():
         print(f"  - {sp:<24}: {count}")
