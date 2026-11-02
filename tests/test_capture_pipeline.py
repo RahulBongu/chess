@@ -23,6 +23,7 @@ sys.path.insert(0, str(SCRIPTS))
 import extract_square_crops as extractor  # noqa: E402
 import validate_capture_manifest as validator  # noqa: E402
 import external_benchmark_adapter as adapter  # noqa: E402
+import benchmark_board_geometry as geom_bench  # noqa: E402
 
 START_PLACEMENT = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 START_FEN = f"{START_PLACEMENT} w KQkq - 0 1"
@@ -527,6 +528,64 @@ class CapturePipelineSyntheticTests(unittest.TestCase):
         self.assertEqual(best_shifts_empty, [0, 1, 2, 3])
         self.assertEqual(score_empty, 0.0)
         self.assertEqual(matches_empty, 0)
+
+    def test_geometry_benchmark_iou_and_corner_error_metrics(self):
+        # Exact match
+        sq1 = np.array([[100, 100], [500, 100], [500, 500], [100, 500]], dtype=np.float32)
+        sq2 = np.array([[100, 100], [500, 100], [500, 500], [100, 500]], dtype=np.float32)
+        iou_exact = geom_bench.compute_polygon_iou(sq1, sq2, (600, 600))
+        err_exact = geom_bench.compute_normalized_corner_error(sq1, sq2, (600, 600))
+        self.assertAlmostEqual(iou_exact, 1.0, places=4)
+        self.assertAlmostEqual(err_exact, 0.0, places=4)
+
+        # Cyclically rolled corners (cyclic permutation invariance)
+        sq2_rolled = np.roll(sq2, -1, axis=0)
+        err_rolled = geom_bench.compute_normalized_corner_error(sq1, sq2_rolled, (600, 600))
+        self.assertAlmostEqual(err_rolled, 0.0, places=4)
+
+        # Non-overlapping
+        sq_far = np.array([[600, 600], [800, 600], [800, 800], [600, 800]], dtype=np.float32)
+        iou_zero = geom_bench.compute_polygon_iou(sq1, sq_far, (1000, 1000))
+        self.assertEqual(iou_zero, 0.0)
+
+        # Shifted by 20 pixels
+        sq_shifted = np.array([[120, 120], [520, 120], [520, 520], [120, 520]], dtype=np.float32)
+        iou_shifted = geom_bench.compute_polygon_iou(sq1, sq_shifted, (600, 600))
+        err_shifted = geom_bench.compute_normalized_corner_error(sq1, sq_shifted, (600, 600))
+        self.assertTrue(0.80 <= iou_shifted < 1.0)
+        self.assertTrue(0.01 <= err_shifted <= 0.06)
+
+    def test_geometry_benchmark_screen_space_corner_ordering(self):
+        # Randomly shuffled corners of a trapezoid
+        pts = np.array([[800, 750], [150, 200], [700, 250], [200, 800]], dtype=np.float32)
+        ordered = geom_bench.order_corners_screen_space(pts)
+
+        # First must be top-left (min x+y -> [150, 200])
+        np.testing.assert_allclose(ordered[0], [150, 200])
+        # Second must be top-right -> [700, 250]
+        np.testing.assert_allclose(ordered[1], [700, 250])
+        # Third must be bottom-right -> [800, 750]
+        np.testing.assert_allclose(ordered[2], [800, 750])
+        # Fourth must be bottom-left -> [200, 800]
+        np.testing.assert_allclose(ordered[3], [200, 800])
+
+    def test_assisted_calibration_simulated_workflow(self):
+        # Generate a synthetic 800x800 checkerboard image
+        img_path = self.write_synthetic_image("test_assisted_board.png", size=800)
+        img = cv2.imread(str(img_path))
+        gt_corners = np.array([[100, 100], [700, 100], [700, 700], [100, 700]], dtype=np.float32)
+
+        np.random.seed(42)
+        ordered_refined, conf, reason = geom_bench.detect_approach_d_assisted(
+            img, gt_corners, noise_std_diag=0.02
+        )
+
+        iou = geom_bench.compute_polygon_iou(ordered_refined, gt_corners, (800, 800))
+        err = geom_bench.compute_normalized_corner_error(ordered_refined, gt_corners, (800, 800))
+
+        self.assertEqual(reason, "ok")
+        self.assertTrue(iou >= 0.85)
+        self.assertTrue(err <= 0.04)
 
 
 
