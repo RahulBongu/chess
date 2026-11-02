@@ -1,7 +1,7 @@
 # Chess Piece Recognition: Dataset Provenance & Licensing Policy
 
-Date: 2026-11-01  
-Milestone: 4.0 — Phase 4.3A  
+Date: 2026-11-02  
+Milestone: 5.2B — Open Chess Feasibility & Capture Finalization  
 Target App: AI Chess Navigator (Offline Mobile Application)  
 Repository: `https://github.com/RahulBongu/chess.git`
 
@@ -38,7 +38,9 @@ AI Chess Navigator operates under strict open-source (MIT), offline, and privacy
 | **ChessReD (Chess Recognition Dataset)** | 4TU.ResearchData (2024) | CC BY-NC-SA 4.0 (published); commercial permission unverified | TU Delft research. 10,800 smartphone photos across 100 complete games from varied angles. | **EXCLUDED FROM ELIGIBLE TRAINING POOL** | Published under **CC BY-NC-SA 4.0**; separate commercial permission unverified. Additionally captured from **a single physical chess set**, providing zero set diversity. |
 | **FENiT Annotated Image Dataset** | Mendeley Data (2026) | CC BY 4.0 (verified) | Binus University research. CVAT annotations of smartphone chessboard images with 4-point corner keypoints. | **APPROVED FOR CORNER BENCHMARKING** | Limited to 1–2 tournament sets (provisional). Insufficient for piece carving diversity. |
 | **samryan18/chess-dataset** | GitHub (2020) | MIT (verified) | Handcrafted photos by Sam Ryan & Mukund V. (500 photos mapped to FEN). | **APPROVED AS REFERENCE PIPELINE** | Single wooden chessboard. Insufficient physical set diversity. |
-| **Open Chess CC0 Photo Collections** | Wikimedia Commons / Stock CC0 | CC0 1.0 Universal (verified) | Community-contributed photography of diverse chess sets. | **CONDITIONALLY APPROVED AS REFERENCE POOL; REJECTED AS DIRECT TRAINING DATA** | Lacks 4-point board corner annotations and square labels; unlinked set identities prevent leak-free partitioning. |
+| **open-chess-photos** | `OffeneDatenmodellierung/open-chess` (v0.1.8, 2026) | `LicenseRef-open-chess-photo-licence-1` | Community photos submitted to open-chess server instances under custom photo licence. | **EXCLUDED (Unverified Third-Party Rights & Unreleased Raw Data)** | Licence granted strictly to server operator and open-chess project. Third-party rights to download and commercialize weights are unverified. Raw photos are not publicly published. |
+| **open-chess-public** | `OffeneDatenmodellierung/open-chess` (v0.1.8, 2026) | **CC0-1.0** (verified terms) | Contributor photos with explicit CC0 opt-in (`--public-only`). | **CONDITIONALLY APPROVED LEGALLY; EXCLUDED DUE TO ZERO PUBLIC AVAILABILITY** | Permitted under CC0, but no public standalone export archive or dataset dump exists (requires private server DB access). Groups by player-day rather than verified physical set identity, posing cross-split leakage hazard. |
+| **Wikimedia Commons / Stock CC0 Photo Collections** | Wikimedia Commons / Unsplash / Pexels | CC0 1.0 Universal (verified) | Community-contributed photography of diverse chess sets. | **CONDITIONALLY APPROVED AS REFERENCE POOL; REJECTED AS DIRECT TRAINING DATA** | Lacks 4-point board corner annotations and square labels; unlinked set identities prevent leak-free partitioning. |
 | **notnil/fenify-3D** | GitHub (2023) | MIT (code only) | 9,505 crowdsourced Mechanical Turk photos of physical chess boards. | **REJECTED (Unreleased Raw Data)** | Raw crowdsourced images retained in private cloud storage and omitted from public repository. |
 | **Roboflow "Chess Pieces Detection"** | Roboflow Universe (v1-v4) | CC BY 4.0 / CC0 (unverified) | Anonymous upload on carpeted floor; single wooden set; 21 corrupted class labels. | **REJECTED (Failed Provenance Gate)** | Unknown image copyright holders; corrupted annotations; single physical set. |
 | **Kaggle "Chess Pieces Detection" (Anshul Mehta)** | Kaggle (651 images) | CC0 (unverified) | Web scrapes from Google Images of isolated pieces on white/transparent backgrounds. | **REJECTED (Unverified Scraped Provenance)** | Lacks chessboard square context, corner keypoints, and auditable copyright lineage. |
@@ -46,14 +48,15 @@ AI Chess Navigator operates under strict open-source (MIT), offline, and privacy
 | **LiveChess2FEN** | GitHub (`davidmallasen/LiveChess2FEN`) | AGPL-3.0 | Academic thesis research. Full pipeline with trained models. | **REJECTED (Copyleft Hazard)** | **GNU Affero GPL v3.0** is viral copyleft and incompatible with MIT distribution. |
 | **ChessCog & ChessRender360** | GitHub / Zenodo | MIT / CC BY 4.0 | 3D Blender computer graphics renders (4,888 and 10,000 renders respectively). | **REJECTED (Synthetic Only)** | Does not provide real physical piece imagery or solve the sim-to-real domain gap. |
 | **Synthetic 3D Staunton Renders (In-House)** | Procedural Raytracer / Blender | **MIT / CC0 (Author-Owned)** | Procedural 3D Staunton meshes based on Nathaniel Cook's 1849 public domain blueprints. | **APPROVED (Primary Synthetic Training Source)** | 100% clean lineage. Zero third-party copyright claims. Fully reproducible and license-safe. |
-| **Author-Owned Physical Capture Protocol (Milestone 5.2 Plan)** | Planned In-House Protocol | **CC0 1.0 Universal / MIT** | 20 distinct physical Staunton sets across 4 style categories, 4 angles, and 3 lighting environments. | **RECOMMENDED FOR FUTURE PHYSICAL RECOGNITION** | Bridges the 14-set global diversity gap with 100% auditable copyright ownership. |
+| **Author-Owned Physical Capture Protocol (Milestone 5.2B Plan A)** | Planned In-House Protocol | **CC0 1.0 Universal / MIT** | 20 distinct physical Staunton sets across 4 style categories: 28 scenes/set (560 full-board scenes = 35,840 context crops) and 16,640 isolated crops (15,360 piece + 1,280 empty). | **RECOMMENDED FOR FUTURE PHYSICAL RECOGNITION** | Bridges the 14-set global diversity gap with 100% auditable copyright ownership. |
 
 ---
 
 ## 4. Current Repository State & Blocker Disclosure
 
-**Status as of Milestone 4.0 Phase 4.3A:**
+**Status as of Milestone 5.2B:**
 1. **No External Real-World Dataset Packaged:** In accordance with the repository's strict clean-room policy, no unverified real-image datasets have been imported or committed to `C:\dev\chess`.
 2. **Prototype Baseline:** The Phase 4.3A prototype implementation (`classifyPiece.ts`) includes the mathematical feature extractor (288-bin HOG), scratch-buffer memory manager, model loader, and evaluation harness.
-3. **Synthetic-Only Evaluation:** All unit tests and training demonstrations in this milestone operate strictly on synthetic fixtures and procedural Staunton silhouettes. Results are labeled **synthetic-only**.
-4. **Production Model Training Gate:** Final production weights ($\ge 90\%$ top-1 on diverse physical sets) remain blocked until an explicitly licensed physical dataset is provided or captured under controlled room conditions on the vivo V2336.
+3. **Synthetic-Only Evaluation:** All unit tests and training demonstrations operate strictly on synthetic fixtures and procedural Staunton silhouettes. Results are labeled **synthetic-only**.
+4. **Open Chess Feasibility Audit:** Completed Gate 1–3 audits of Open Chess (`OffeneDatenmodellierung/open-chess`). Established that `open-chess-photos` has unverified third-party commercial rights and `open-chess-public` has zero publicly downloadable data archives and lacks verified physical set identities.
+5. **Production Model Training Gate:** Final production weights ($\ge 88.0\%$ Top-1 on diverse physical sets) remain blocked until an explicitly licensed physical dataset is provided or captured under controlled room conditions on the vivo V2336 following the Plan A protocol. Production weights in `src/vision/pieceModelWeights.ts` remain strictly **UNCHANGED**.
