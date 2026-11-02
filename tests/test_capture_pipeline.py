@@ -408,6 +408,25 @@ class CapturePipelineSyntheticTests(unittest.TestCase):
             self.assertNotIn("physical_tag_id", crop)
             self.assertTrue(os.path.isfile(crop["crop_path"]))
 
+        # Invariant 3: Evaluation modes distinguish Mode 1 (Oracle) and Mode 2 (Image-driven)
+        modes = rec["evaluation_modes"]
+        self.assertTrue(modes["mode1_ground_truth_assisted"]["is_oracle_assisted"])
+        self.assertFalse(modes["mode2_image_driven"]["is_oracle_assisted"])
+        self.assertEqual(modes["mode2_image_driven"]["resolved_orientation"], "canonical_screen_space")
+
+    def test_external_adapter_distinguishes_oracle_from_image_driven_modes(self):
+        # Test image-driven corner ordering produces top-left first in screen space
+        corners = np.array([[0.8, 0.8], [0.1, 0.1], [0.85, 0.15], [0.15, 0.85]], dtype=np.float32)
+        ordered = adapter.resolve_image_driven_orientation(corners, (1000, 1000))
+        # First point must be top-left (min x+y -> [100, 100])
+        np.testing.assert_allclose(ordered[0], [100.0, 100.0], atol=1.0)
+        # Second point must be top-right ([850, 150])
+        np.testing.assert_allclose(ordered[1], [850.0, 150.0], atol=1.0)
+        # Third point must be bottom-right ([800, 800])
+        np.testing.assert_allclose(ordered[2], [800.0, 800.0], atol=1.0)
+        # Fourth point must be bottom-left ([150, 850])
+        np.testing.assert_allclose(ordered[3], [150.0, 850.0], atol=1.0)
+
     def test_external_adapter_skips_timestamp_images_cleanly(self):
         img_path = self.write_synthetic_image("20260219_220620.jpg", size=1000)
         ann_path = self.raw_dir / "20260219_220620.txt"

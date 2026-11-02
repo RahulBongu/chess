@@ -278,6 +278,28 @@ def resolve_board_orientation(
     return resolved_corners, resolved_name, match_rate, best_matches
 
 
+def resolve_image_driven_orientation(
+    corners: np.ndarray,
+    image_shape: Tuple[int, int],
+) -> np.ndarray:
+    """
+    Orders 4 board corners purely from image plane geometry:
+    top-left, top-right, bottom-right, bottom-left in screen coordinates.
+    Never uses ground-truth FEN or piece labels.
+    """
+    h_img, w_img = image_shape
+    corners_px = corners.copy()
+    corners_px[:, 0] *= w_img
+    corners_px[:, 1] *= h_img
+
+    center = corners_px.mean(axis=0)
+    angles = np.arctan2(corners_px[:, 1] - center[1], corners_px[:, 0] - center[0])
+    order = np.argsort(angles)
+    pts = corners_px[order]
+    start = int(np.argmin(pts[:, 0] + pts[:, 1]))
+    return np.roll(pts, -start, axis=0)
+
+
 def extract_observation_crops(
     rectified_board: np.ndarray,
     placement: str,
@@ -452,11 +474,32 @@ def process_external_image(
             "scene_id": scene_id,
         }
 
-    # 3. Perspective rectification & orientation resolution
+    # 3. Perspective rectification & orientation resolution (Mode 1: Oracle)
     grid = fen_to_grid(placement)
     resolved_corners, orientation, match_rate, matches = resolve_board_orientation(
         board_corners, pieces, grid, (h_img, w_img)
     )
+
+    # 3b. Perspective rectification & orientation resolution (Mode 2: Image-driven)
+    image_driven_corners = resolve_image_driven_orientation(board_corners, (h_img, w_img))
+    H_img_driven = cv2.getPerspectiveTransform(image_driven_corners, CANONICAL_DST)
+    img_driven_matches = 0
+    for p in pieces:
+        px = p["cx"] * w_img
+        py = p["cy"] * h_img
+        den = H_img_driven[2, 0] * px + H_img_driven[2, 1] * py + H_img_driven[2, 2]
+        if abs(den) < 1e-12:
+            continue
+        u = (H_img_driven[0, 0] * px + H_img_driven[0, 1] * py + H_img_driven[0, 2]) / den
+        v = (H_img_driven[1, 0] * px + H_img_driven[1, 1] * py + H_img_driven[1, 2]) / den
+        if 0.0 <= u < CANONICAL_BOARD_SIZE and 0.0 <= v < CANONICAL_BOARD_SIZE:
+            col = min(7, max(0, int(u / CANONICAL_SQUARE_SIZE)))
+            row = min(7, max(0, int(v / CANONICAL_SQUARE_SIZE)))
+            if grid[row][col] == p["info"]["char"]:
+                img_driven_matches += 1
+    total_pieces = len(pieces)
+    img_driven_match_rate = (img_driven_matches / total_pieces) if total_pieces > 0 else 0.0
+    agrees_with_oracle = bool(np.allclose(image_driven_corners, resolved_corners, atol=2.0))
 
     H = cv2.getPerspectiveTransform(resolved_corners, CANONICAL_DST)
     rectified = cv2.warpPerspective(img, H, (CANONICAL_BOARD_SIZE, CANONICAL_BOARD_SIZE))
@@ -496,6 +539,23 @@ def process_external_image(
         "rectified_board_path": str(rectified_path),
         "derived_crops_count": len(crops),
         "deployed_classifier_eval": eval_stats,
+        "evaluation_modes": {
+            "mode1_ground_truth_assisted": {
+                "description": "Orientation resolved using FEN oracle to select optimal 4-way rotation",
+                "resolved_orientation": orientation,
+                "placement_match_score": round(match_rate, 4),
+                "placement_matched_pieces": matches,
+                "is_oracle_assisted": True,
+            },
+            "mode2_image_driven": {
+                "description": "Orientation determined by image plane screen coordinates without FEN oracle",
+                "resolved_orientation": "canonical_screen_space",
+                "placement_match_score": round(img_driven_match_rate, 4),
+                "placement_matched_pieces": img_driven_matches,
+                "orientation_agrees_with_oracle": agrees_with_oracle,
+                "is_oracle_assisted": False,
+            },
+        },
         "crops": crops,
     }
 
@@ -624,22 +684,49 @@ def main() -> int:
 
     if processed_count > 0:
         processed_recs = [r for r in records if r["status"] == "PROCESSED"]
-        avg_placement_match = np.mean([r["placement_match_score"] for r in processed_recs])
+        avg_mode1 = np.mean([r["placement_match_score"] for r in processed_recs])
+        avg_mode2 = np.mean([r["evaluation_modes"]["mode2_image_driven"]["placement_match_score"] for r in processed_recs])
+        agrees_cnt = sum(1 for r in processed_recs if r["evaluation_modes"]["mode2_image_driven"]["orientation_agrees_with_oracle"])
+        exact_mode1 = sum(1 for r in processed_recs if r["placement_match_score"] == 1.0)
+        exact_mode2 = sum(1 for r in processed_recs if r["evaluation_modes"]["mode2_image_driven"]["placement_match_score"] == 1.0)
+
         orientations = Counter(r["resolved_orientation"] for r in processed_recs)
         total_crops = sum(r["derived_crops_count"] for r in processed_recs)
 
         total_pieces_eval = sum(r["deployed_classifier_eval"]["occupied_squares"] for r in processed_recs)
         total_pieces_correct = sum(r["deployed_classifier_eval"]["correct_predictions"] for r in processed_recs)
+        total_abstentions = sum(r["deployed_classifier_eval"]["abstain_count"] for r in processed_recs)
         overall_piece_acc = (
             (total_pieces_correct / total_pieces_eval * 100.0) if total_pieces_eval > 0 else 0.0
         )
+        non_abstained_acc = (
+            (total_pieces_correct / (total_pieces_eval - total_abstentions) * 100.0)
+            if (total_pieces_eval - total_abstentions) > 0
+            else 0.0
+        )
 
-        print("\n--- Processed Dataset Statistics ---")
-        print(f"Total Derived Square Crops: {total_crops} (64 per full board)")
-        print(f"Average FEN Placement Match: {avg_placement_match * 100:.2f}%")
-        print(f"Resolved Orientations:       {dict(orientations)}")
-        print(f"Total Occupied Pieces Eval:  {total_pieces_eval}")
-        print(f"Deployed HOG Piece Accuracy: {overall_piece_acc:.2f}% ({total_pieces_correct}/{total_pieces_eval})")
+        print("\n--- Disaggregated Evaluation Modes (Milestone 5.2J Audit) ---")
+        print(f"Mode 1 (Ground-Truth-Assisted / Oracle Orientation):")
+        print(f"  Mean FEN Placement Match Score:    {avg_mode1 * 100:.2f}% (YOLO box to FEN square alignment)")
+        print(f"  Exact Placement Matches (100%):    {exact_mode1}/{len(processed_recs)} ({exact_mode1/len(processed_recs)*100:.2f}%)")
+        print(f"  Resolved Orientations:             {dict(orientations)}")
+        print(f"  [DISCLOSURE: Mode 1 uses filename FEN to select best 4-way corner orientation. Not autonomous.]")
+        print(f"\nMode 2 (Image-Driven Screen-Space Orientation):")
+        print(f"  Mean FEN Placement Match Score:    {avg_mode2 * 100:.2f}% (screen-space corner ordering)")
+        print(f"  Exact Placement Matches (100%):    {exact_mode2}/{len(processed_recs)} ({exact_mode2/len(processed_recs)*100:.2f}%)")
+        print(f"  Agreement with Oracle Orientation: {agrees_cnt}/{len(processed_recs)} ({agrees_cnt/len(processed_recs)*100:.2f}%)")
+        print(f"  [DISCLOSURE: Mode 2 uses image plane geometry without FEN oracle. Drops { (avg_mode1 - avg_mode2)*100:.2f} pp.]")
+        print(f"\nMode 3 (End-to-End Autonomous Pipeline):")
+        print(f"  Autonomous Raw Board Detection:    Requires deep-learning pose keypoints or manual calibration.")
+        print(f"  Classical Contour Detection:       0% on oblique tile-floor scenes (over 100k grout/glare contours).")
+
+        print("\n--- Deployed Piece Classifier Statistics (src/vision/pieceModelWeights.ts) ---")
+        print(f"Total Occupied Squares Evaluated:   {total_pieces_eval}")
+        print(f"Correct Piece Predictions:          {total_pieces_correct}")
+        print(f"Abstentions (conf < 0.60 | marg):   {total_abstentions} ({total_abstentions/total_pieces_eval*100:.2f}%)")
+        print(f"Overall Deployed HOG Accuracy:      {overall_piece_acc:.2f}% ({total_pieces_correct}/{total_pieces_eval})")
+        print(f"Coverage-Filtered Accuracy:         {non_abstained_acc:.2f}% ({total_pieces_correct}/{total_pieces_eval - total_abstentions})")
+        print(f"Total Derived Square Crops:         {total_crops} (64 per full board outside Git)")
 
     return 0
 
