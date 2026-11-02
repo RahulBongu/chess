@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  canonicalToPhysicalTag,
   countPiecesInPlacement,
   getExpectedSplitForSet,
+  PHYSICAL_TAG_REGEX,
+  physicalTagToCanonical,
   validateCompleteFen,
   validateFenPlacement,
   validateManifestCollection,
@@ -14,12 +17,19 @@ import {
 import type { CaptureManifestRecord } from '../src/vision/manifestValidator.ts';
 
 function createValidIsolatedRecord(overrides: Partial<CaptureManifestRecord> = {}): CaptureManifestRecord {
+  const piece_instance_id = overrides.piece_instance_id ?? 'SET01_W_P01';
+  const physical_tag_id =
+    overrides.physical_tag_id !== undefined
+      ? overrides.physical_tag_id
+      : canonicalToPhysicalTag(piece_instance_id);
+
   return {
     dataset_version: '1.0.0',
     source_id: 'author_capture_2026',
     set_id: 'SET01',
     split: 'train',
-    piece_instance_id: 'SET01_W_P01',
+    piece_instance_id,
+    physical_tag_id,
     piece_type: 'pawn',
     piece_color: 'white',
     scene_id: 'SET01_SCENE_01',
@@ -45,12 +55,19 @@ function createValidIsolatedRecord(overrides: Partial<CaptureManifestRecord> = {
 }
 
 function createValidContextRecord(overrides: Partial<CaptureManifestRecord> = {}): CaptureManifestRecord {
+  const piece_instance_id = overrides.piece_instance_id ?? 'SET01_W_K01';
+  const physical_tag_id =
+    overrides.physical_tag_id !== undefined
+      ? overrides.physical_tag_id
+      : canonicalToPhysicalTag(piece_instance_id);
+
   return {
     dataset_version: '1.0.0',
     source_id: 'author_capture_2026',
     set_id: 'SET01',
     split: 'train',
-    piece_instance_id: 'SET01_W_K01',
+    piece_instance_id,
+    physical_tag_id,
     piece_type: 'king',
     piece_color: 'white',
     scene_id: 'SET01_SCENE_START_01',
@@ -76,12 +93,19 @@ function createValidContextRecord(overrides: Partial<CaptureManifestRecord> = {}
 }
 
 function createValidEmptyRecord(overrides: Partial<CaptureManifestRecord> = {}): CaptureManifestRecord {
+  const piece_instance_id = overrides.piece_instance_id ?? 'EMPTY';
+  const physical_tag_id =
+    overrides.physical_tag_id !== undefined
+      ? overrides.physical_tag_id
+      : 'NONE';
+
   return {
     dataset_version: '1.0.0',
     source_id: 'author_capture_2026',
     set_id: 'SET01',
     split: 'train',
-    piece_instance_id: 'EMPTY',
+    piece_instance_id,
+    physical_tag_id,
     piece_type: 'empty',
     piece_color: 'none',
     scene_id: 'SET01_SCENE_EMPTY_01',
@@ -502,5 +526,82 @@ describe('offline capture manifest validator [Milestone 5.2D]', () => {
     assert.equal(pieceRefCrops, 640);
     assert.equal(reservedStressEmptyCrops, 2560);
     assert.equal(canonicalDatasetPool + pieceRefCrops + reservedStressEmptyCrops, 55680);
+  });
+
+  it('17. verifies deterministic bidirectional mapping between canonical piece ID and physical underside tag ID [Milestone 5.2F Gate 1]', () => {
+    // Forward mapping canonical -> physical
+    assert.equal(canonicalToPhysicalTag('SET01_W_P01'), 'S01-W-P01');
+    assert.equal(canonicalToPhysicalTag('SET01_W_K01'), 'S01-W-K01');
+    assert.equal(canonicalToPhysicalTag('SET15_B_N02'), 'S15-B-N02');
+    assert.equal(canonicalToPhysicalTag('SET20_B_Q01'), 'S20-B-Q01');
+    assert.equal(canonicalToPhysicalTag('EMPTY'), 'NONE');
+    assert.equal(canonicalToPhysicalTag('INVALID'), 'INVALID');
+
+    // Reverse mapping physical -> canonical
+    assert.equal(physicalTagToCanonical('S01-W-P01'), 'SET01_W_P01');
+    assert.equal(physicalTagToCanonical('S01-W-K01'), 'SET01_W_K01');
+    assert.equal(physicalTagToCanonical('S15-B-N02'), 'SET15_B_N02');
+    assert.equal(physicalTagToCanonical('S20-B-Q01'), 'SET20_B_Q01');
+    assert.equal(physicalTagToCanonical('NONE'), 'EMPTY');
+    assert.equal(physicalTagToCanonical('EMPTY'), 'EMPTY');
+    assert.equal(physicalTagToCanonical('INVALID'), 'INVALID');
+
+    // Regex check
+    assert.equal(PHYSICAL_TAG_REGEX.test('S01-W-P01'), true);
+    assert.equal(PHYSICAL_TAG_REGEX.test('S20-B-K01'), true);
+    assert.equal(PHYSICAL_TAG_REGEX.test('SET01_W_P01'), false); // Canonical format, not physical tag
+    assert.equal(PHYSICAL_TAG_REGEX.test('S01_W_P01'), false); // Underscores instead of dashes
+  });
+
+  it('18. detects physical tag mismatches, malformed tags, tag mapping conflicts, and tag leakage [Milestone 5.2F Gate 1]', () => {
+    // 1. Tag mismatch (piece is P01, tag says P02)
+    const tagMismatch = createValidIsolatedRecord({
+      piece_instance_id: 'SET01_W_P01',
+      physical_tag_id: 'S01-W-P02',
+    });
+    const errs1 = validateManifestRecord(tagMismatch);
+    assert.ok(errs1.some((e) => e.includes('does not deterministically map')));
+
+    // 2. Malformed physical tag format
+    const malformedTag = createValidIsolatedRecord({
+      piece_instance_id: 'SET01_W_P01',
+      physical_tag_id: 'TAG_PAWN_1',
+    });
+    const errs2 = validateManifestRecord(malformedTag);
+    assert.ok(errs2.some((e) => e.includes("Invalid 'physical_tag_id'")));
+
+    // 3. Tag mapped to multiple pieces across collection
+    const rec1 = createValidIsolatedRecord({
+      piece_instance_id: 'SET01_W_P01',
+      physical_tag_id: 'S01-W-P01',
+      derived_crop_path: 'crops/train/SET01/p01.png',
+    });
+    const rec2 = createValidIsolatedRecord({
+      piece_instance_id: 'SET01_W_P02', // different piece!
+      physical_tag_id: 'S01-W-P01', // same tag reused!
+      derived_crop_path: 'crops/train/SET01/p02.png',
+    });
+    const resCollection1 = validateManifestCollection([rec1, rec2]);
+    assert.equal(resCollection1.valid, false);
+    assert.ok(resCollection1.errors.some((e) => e.includes('[Tag Identity Conflict]')));
+
+    // 4. Tag leaking across splits
+    const recTrain = createValidIsolatedRecord({
+      set_id: 'SET01',
+      split: 'train',
+      piece_instance_id: 'SET01_W_P01',
+      physical_tag_id: 'S01-W-P01',
+      derived_crop_path: 'crops/train/SET01/p01.png',
+    });
+    const recVal = createValidIsolatedRecord({
+      set_id: 'SET15',
+      split: 'val',
+      piece_instance_id: 'SET15_W_P01',
+      physical_tag_id: 'S01-W-P01', // SET01 physical tag erroneously appearing in SET15 val!
+      derived_crop_path: 'crops/val/SET15/p01.png',
+    });
+    const resCollection2 = validateManifestCollection([recTrain, recVal]);
+    assert.equal(resCollection2.valid, false);
+    assert.ok(resCollection2.errors.some((e) => e.includes('[Tag Leakage Violation]')));
   });
 });

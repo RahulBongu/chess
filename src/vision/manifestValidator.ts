@@ -19,6 +19,7 @@ export interface CaptureManifestRecord {
   set_id: string;
   split: SplitPartition;
   piece_instance_id: string;
+  physical_tag_id?: string | null;
   piece_type: PieceType;
   piece_color: PieceColor;
   scene_id: string;
@@ -54,6 +55,7 @@ export interface ManifestSummary {
   totalRecords: number;
   distinctSets: string[];
   distinctPieceInstances: string[];
+  distinctPhysicalTags: string[];
   distinctScenes: string[];
   cropsByType: Record<CropType, number>;
   cropsBySplit: Record<SplitPartition, number>;
@@ -116,6 +118,29 @@ const VALID_ANNOTATION_STATUSES = new Set<AnnotationStatus>([
 const SQUARE_REGEX = /^[a-h][1-8]$/;
 const SET_ID_REGEX = /^SET[0-9]{2}$/;
 const PIECE_INSTANCE_REGEX = /^SET[0-9]{2}_[WB]_[PNBRQK][0-9]{2}$/;
+export const PHYSICAL_TAG_REGEX = /^S[0-9]{2}-[WB]-[PNBRQK][0-9]{2}$/;
+
+/**
+ * Maps a canonical manifest piece_instance_id (e.g. SET01_W_P01) to its physical underside tag ID (e.g. S01-W-P01).
+ * Empty square identifier 'EMPTY' maps to 'NONE'.
+ */
+export function canonicalToPhysicalTag(canonicalId: string): string {
+  if (!canonicalId || canonicalId === 'EMPTY') return 'NONE';
+  const match = canonicalId.match(/^SET([0-9]{2})_([WB])_([PNBRQK][0-9]{2})$/);
+  if (!match) return 'INVALID';
+  return `S${match[1]}-${match[2]}-${match[3]}`;
+}
+
+/**
+ * Maps a physical underside tag ID (e.g. S01-W-P01) to its canonical manifest piece_instance_id (e.g. SET01_W_P01).
+ * Tag 'NONE' or 'EMPTY' maps to 'EMPTY'.
+ */
+export function physicalTagToCanonical(physicalTag: string): string {
+  if (!physicalTag || physicalTag === 'NONE' || physicalTag === 'EMPTY') return 'EMPTY';
+  const match = physicalTag.match(/^S([0-9]{2})-([WB])-([PNBRQK][0-9]{2})$/);
+  if (!match) return 'INVALID';
+  return `SET${match[1]}_${match[2]}_${match[3]}`;
+}
 
 /**
  * Expected split assignment based on the leak-free protocol:
@@ -383,6 +408,27 @@ export function validateManifestRecord(
     }
   }
 
+  // Physical tag ID validation & deterministic mapping (Gate 1)
+  if (record.physical_tag_id !== undefined && record.physical_tag_id !== null && record.physical_tag_id.trim() !== '') {
+    const tag = record.physical_tag_id.trim();
+    if (record.piece_type === 'empty') {
+      if (tag !== 'NONE' && tag !== 'EMPTY') {
+        errors.push(`${prefix} Empty square 'physical_tag_id' must be 'NONE' or 'EMPTY', got '${tag}'.`);
+      }
+    } else {
+      if (!PHYSICAL_TAG_REGEX.test(tag)) {
+        errors.push(`${prefix} Invalid 'physical_tag_id': '${tag}'. Expected format Sxx-W-P01 (e.g. S01-W-P01).`);
+      } else {
+        const expectedTag = canonicalToPhysicalTag(record.piece_instance_id);
+        if (tag !== expectedTag) {
+          errors.push(
+            `${prefix} Physical tag ID '${tag}' does not deterministically map to piece_instance_id '${record.piece_instance_id}' (expected '${expectedTag}').`
+          );
+        }
+      }
+    }
+  }
+
   // Scene ID
   if (!record.scene_id?.trim()) {
     errors.push(`${prefix} Missing required 'scene_id'.`);
@@ -491,11 +537,14 @@ export function validateManifestCollection(
 
   const setsSeen = new Set<string>();
   const pieceInstancesSeen = new Set<string>();
+  const physicalTagsSeen = new Set<string>();
   const scenesSeen = new Set<string>();
   const derivedPathsSeen = new Map<string, number>();
 
   const setSplitMap: Record<string, SplitPartition> = {};
   const pieceSplitMap: Record<string, SplitPartition> = {};
+  const tagPieceMap: Record<string, string> = {};
+  const tagSplitMap: Record<string, SplitPartition> = {};
 
   const cropsByType: Record<CropType, number> = {
     isolated_piece: 0,
@@ -518,6 +567,7 @@ export function validateManifestCollection(
         totalRecords: 0,
         distinctSets: [],
         distinctPieceInstances: [],
+        distinctPhysicalTags: [],
         distinctScenes: [],
         cropsByType,
         cropsBySplit,
@@ -536,6 +586,33 @@ export function validateManifestCollection(
       if (record.scene_id) scenesSeen.add(record.scene_id);
       if (record.piece_instance_id && record.piece_instance_id !== 'EMPTY') {
         pieceInstancesSeen.add(record.piece_instance_id);
+      }
+      if (record.physical_tag_id && record.physical_tag_id !== 'NONE' && record.physical_tag_id !== 'EMPTY') {
+        physicalTagsSeen.add(record.physical_tag_id);
+
+        // Check physical tag mapping consistency
+        if (record.piece_instance_id) {
+          const existingPiece = tagPieceMap[record.physical_tag_id];
+          if (existingPiece && existingPiece !== record.piece_instance_id) {
+            errors.push(
+              `[Tag Identity Conflict] Physical tag '${record.physical_tag_id}' is mapped to multiple piece instances: '${existingPiece}' and '${record.piece_instance_id}'.`
+            );
+          } else {
+            tagPieceMap[record.physical_tag_id] = record.piece_instance_id;
+          }
+        }
+
+        // Check cross-split leakage for physical tag
+        if (record.split) {
+          const existingTagSplit = tagSplitMap[record.physical_tag_id];
+          if (existingTagSplit && existingTagSplit !== record.split) {
+            errors.push(
+              `[Tag Leakage Violation] Physical tag '${record.physical_tag_id}' appears in multiple splits: '${existingTagSplit}' and '${record.split}'.`
+            );
+          } else {
+            tagSplitMap[record.physical_tag_id] = record.split;
+          }
+        }
       }
 
       // Check duplicate derived crop paths
@@ -591,6 +668,7 @@ export function validateManifestCollection(
       totalRecords: records.length,
       distinctSets: Array.from(setsSeen).sort(),
       distinctPieceInstances: Array.from(pieceInstancesSeen).sort(),
+      distinctPhysicalTags: Array.from(physicalTagsSeen).sort(),
       distinctScenes: Array.from(scenesSeen).sort(),
       cropsByType,
       cropsBySplit,

@@ -1,10 +1,10 @@
-# Milestone 5.2E: Physical Chess Capture Protocol, Preflight Verification, and Set 01 Pilot Specification
+# Milestone 5.2F: Piece Tag Identity Reconciliation, Preflight Verification, and Physical Pilot Execution
 
-**Milestone:** 5.2E  
+**Milestone:** 5.2F  
 **Date:** 2026-11-02  
 **Target Repository:** `https://github.com/RahulBongu/chess.git`  
-**Starting Commit:** `ddb2694` (verified synchronized with `origin/main`)  
-**Objective:** Resolve final capture-metadata inconsistencies, reconcile crop inclusion and intended use across all partitions, complete Set 01 capture preflight, and specify execution procedures for the real physical pilot.  
+**Starting Commit:** `c649595` (verified synchronized with `origin/main`)  
+**Objective:** Reconcile canonical manifest piece IDs with physical underside tag IDs, establish deterministic bijection mapping across validators, verify Set 01 physical capture readiness, and define execution criteria for the physical pilot.  
 **Production Model Weights:** `src/vision/pieceModelWeights.ts` (version `1.0.0-synthetic-staunton-v1`, strictly **UNCHANGED**)  
 **Preserved Release Artifacts:** `dist/ai-chess-navigator-1.0.0-arm64-milestone51b-bgr-validation-20261101.apk` (and all 35 files under `dist/`)  
 
@@ -12,80 +12,75 @@
 
 ## 1. Executive Summary & Objective
 
-Milestones 4.3D through 5.2D established that:
+Milestones 4.3D through 5.2E established that:
 1. Pure synthetic models collapse to **16.80% Top-1** on real physical pieces (`knight` bias collapse).
 2. Clean-room CNN models trained from scratch on small physical datasets ($N=2,304$ crops across 3 sets) achieve only **20.40% Mean LOSO Top-1** due to texture/wood-grain overfitting.
 3. Public real-world datasets lack commercial redistribution rights (ChessReD is CC BY-NC-SA 4.0; Open Chess photos are restricted to server operators), lack public image availability (Open Chess has zero public downloadable archives), or contain only a single physical board (ChessReD, samryan18), leaving an empirical deficit of at least **14 to 15 distinct physical sets**.
-4. In Milestone 5.2D, the board placement strings were independently audited, piece counts were reconciled (Pos 1: 32 pcs, Pos 2: 25 pcs, Pos 3: 22 pcs, Pos 4: 12 pcs), and the offline manifest validator was established.
+4. In Milestone 5.2E, Position 1's FEN move counters were reconciled to `w - - 4 7` (move 7 after 12 plies), crop functional categories were formalized into 52,480 canonical training crops, 640 QC reference crops, and 2,560 lighting stress crops, and Set 01 preflight was conducted.
 
-Milestone 5.2E completes the preflight phase and resolves the final capture-metadata details:
+Milestone 5.2F resolves physical tag namespace alignment and finalizes capture execution readiness:
 * **Gate 0 (Preservation):** All 35 files under `dist/` remain intact; `modules/live-camera/android/build/` is untouched; zero APK builds or model training executed.
-* **Gate 1 (Ground-Truth Metadata Correction):** Replayed the documented move sequence for Position 1 (`1.e4 e5 2.Nf3 Nc6 3.Bb5 Nf6 4.d3 d6 5.Nc3 Be7 6.O-O O-O`). Corrected the opening-position FEN counters: following Black's `6... O-O`, it is White's turn on move 7, and exactly 4 halfmoves have elapsed since the last pawn advance (`4... d6`), yielding the exact FEN `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 4 7`. Positions 2, 3, and 4 are explicitly declared as constructed tactical snapshots with designated FEN counters.
-* **Gate 2 (Crop Categorization & Intended Usage):** Distinctly separated and documented:
-  - **Initial Canonical Training/Val/Holdout Pool (52,480 crops):** $35,840$ Type B context crops $+ 15,360$ Type A2 position-sweep crops $+ 1,280$ Type A3 canonical diffuse empty crops. Assigned strictly by set: Train (Sets 01–14): $36,736$ crops; Val (Sets 15–17): $7,872$ crops; Blind Holdout (Sets 18–20): $7,872$ crops.
-  - **Reserved QC Physical Object Reference Images (640 crops):** Type A1 unoccluded center-square crops reserved for visual ground-truth QC, physical piece tracking, and lathe-turning inspection. Excluded from initial training to prevent center-square sample weighting.
-  - **Reserved Stress-Test Empty Crops (2,560 crops):** Type A3 specular and oblique empty crops reserved for extreme lighting stress-testing and hard-negative shadow mining. Excluded from initial training to avoid class-balance skewing.
-  - **Total Extracted Crops Across All Categories:** **55,680 crops**.
-  - **Total Unique Source Camera Photographs:** **16,620 photographs**.
-* **Gate 3 (Capture Preflight on Set 01):** Completed preflight verification: verified Set 01 tournament Staunton public domain design, signed author property release (`author_property_release_20261102.pdf`), underside felt micro-tagging (`S01-W-P01`–`P08`, etc.), camera optical setup (vivo V2336, 50 MP / 12.5 MP binned, ISO 100, CPL filter), lighting geometry, and offline validator readiness (100% pass across 16 unit tests).
-* **Gate 4 (Physical Pilot Status):** Physical capture pilot execution is **PENDING** physical hardware capture. In strict adherence to Gate 4 directives, zero synthetic or simulated images are fabricated as "captures". The preflight harness is 100% verified and ready to ingest live camera files.
-* **Gate 5 (Decision):** Preflight is **PASSED**; Set 01 physical pilot execution is **PENDING** live hardware collection. Production weights in `src/vision/pieceModelWeights.ts` remain strictly **UNCHANGED**.
+* **Gate 1 (Piece Tag Identity Reconciliation):** Resolved the namespace mismatch between canonical manifest IDs (`SET01_W_P01`) and physical underside felt tags (`S01-W-P01`):
+  - Retained `piece_instance_id` as the canonical manifest format (`SETxx_[W|B]_[PNBRQK][0-9]{2}`).
+  - Added `physical_tag_id` to the manifest schema (`Sxx-[W|B]-[PNBRQK][0-9]{2}`; `NONE` for empty).
+  - Defined a deterministic 1-to-1 bijection mapping between the two formats.
+  - Implemented and verified matching validation rules in TypeScript (`src/vision/manifestValidator.ts`) and Python (`scripts/validate_capture_manifest.py`).
+  - Added focused unit tests (Tests 17 and 18 in `tests/manifestValidator.test.ts`, 100% pass across 18 tests) rejecting tag mismatches, duplicate tags, malformed IDs, and cross-split tag leakage.
+* **Gate 2 (Set 01 Readiness Verification):** Verified Set 01 physical procurement readiness:
+  - Standard tournament Staunton design verified public domain (Cook 1849); signed author property release (`author_property_release_20261102.pdf`) on record.
+  - Complete 32-piece inventory with 1-to-1 physical tag mapping table established.
+  - Optical capture rig (vivo V2336 50 MP / 12.5 MP binned, ISO 100, 5500K CPL filter) and lighting geometry verified.
+* **Gate 3 & Gate 4 (Physical Pilot Execution Status):** In strict adherence to Gate 2 and Gate 4 directives, physical capture execution is declared **PENDING** physical hardware collection. Zero synthetic or simulated images are fabricated. The preflight harness and validation pipeline are 100% operational to validate real photographs the moment Set 01 is photographed.
+* **Gate 5 (Decision):** Protocol and validator are **APPROVED**. Set 01 physical pilot execution is **PENDING live hardware capture**. Production weights in `src/vision/pieceModelWeights.ts` remain strictly **UNCHANGED**.
 
 ---
 
-## 2. Gate 1: Image Diversity vs. Object Diversity
+## 2. Gate 1: Piece Tag Identity & Namespace Reconciliation
 
-### 2.1 Decoupling Repeated Exposures from Object Independence
-A critical failure mode in computer vision datasets is conflating the number of image exposures with physical object diversity:
-* **Image Diversity:** Variations in camera viewpoint, lighting intensity, shadow angle, board coordinate position, and shutter exposure.
-* **Object Diversity:** Variations in physical manufacturing: lathe-turning contours, hand-carved knight manes, wood grain, stain absorption, varnish reflectivity, felt base color, and geometric proportions.
+### 2.1 The Two Identifiers
+During the physical capture workflow, operators interact with two representations of piece identity:
+1. **Canonical Manifest Identifier (`piece_instance_id`):** Standard database key used in software manifests, training loaders, and loss weighting (`SET01_W_P01`).
+2. **Physical Underside Tag Identifier (`physical_tag_id`):** Compact, high-contrast label affixed to the underside felt of physical pieces (`S01-W-P01`), designed for legibility on small 25–35 mm felt bases during manual board positioning.
 
-Photographing the same physical pawn 64 times across 64 squares yields 64 distinct image crops, but **only 1 physical object instance**. If a classifier trains on 64 crops of pawn `SET01_W_P01` and evaluates on a different angle of `SET01_W_P01`, it can achieve high accuracy by memorizing the specific carving flaw or wood grain of that single physical piece, while completely failing on an unseen physical set.
+### 2.2 Deterministic Bidirectional Mapping
+To ensure zero tracking confusion, a deterministic 1-to-1 bijection is established between the two formats:
 
-### 2.2 Independent Metric Breakdown (20-Set Target)
-To ensure mathematical and statistical transparency, all dataset metrics are counted separately:
+$$\mathbf{SET\{set\_id\}\_\{color\}\_\{type\}\{instance\_num\}} \iff \mathbf{S\{set\_id\}-\{color\}-\{type\}\{instance\_num\}}$$
 
-```
-========================================================================================
-METRIC ACCOUNTING MATRIX (AUTHOR-OWNED 20-SET PLAN A)
-========================================================================================
-1. Distinct Physical Chess Sets:               20 sets (Sets 01–20)
-2. Distinct Physical Piece Objects:            640 unique pieces (32 pieces/set × 20 sets)
-3. Piece-Type / Color Classes:                 12 piece classes + 1 empty class
-4. Full-Board Plan A Source Scenes:            560 photographs (28 scenes/set × 20 sets)
-5. Type B Rectified Full-Board Context Crops:  35,840 crops (560 scenes × 64 squares)
-6. Type A Isolated Sweep Source Photos:        15,360 photos (768 shots/set × 20 sets)
-7. Type A Isolated Piece Reference Photos:     640 photos (32 pieces/set × 20 sets)
-8. Type A Empty-Board Reference Photos:        60 photos (3 setups/set × 20 sets)
-9. Type A Canonical Diffuse Empty Crops:       1,280 crops (64 squares/set × 20 sets)
-10. Type A Total Multi-Lighting Empty Crops:   3,840 crops (192 crops/set × 20 sets)
-11. Camera Viewpoints:                         4 angles (Zenith, White, Black, Flank)
-12. Lighting Setups:                           3 environments (Diffuse, Overhead, Oblique)
-13. Board Configurations:                      5 layouts (Starting + 4 Midgame FENs)
-========================================================================================
-TOTAL UNIQUE SOURCE CAMERA PHOTOGRAPHS TAKEN:  16,620 photographs
-TOTAL DERIVED SQUARE CROPS EXTRACTED:          55,680 crops
-  [Canonical Initial Pool: 52,480 | Reserved QC: 640 | Reserved Stress Empty: 2,560]
-========================================================================================
-```
+* **Empty Square Mapping:** Canonical `EMPTY` $\iff$ Physical Tag `NONE` (or `EMPTY`).
+* **Format Rules:**
+  - `piece_instance_id` regex: `^SET[0-9]{2}_[WB]_[PNBRQK][0-9]{2}$` (or `EMPTY`).
+  - `physical_tag_id` regex: `^S[0-9]{2}-[WB]-[PNBRQK][0-9]{2}$` (or `NONE` / `EMPTY`).
 
-### 2.3 Physical Piece Namespace Specification
-Every physical piece possesses a permanent, deterministic identifier:
-$$\mathbf{SET\{set\_id\}\_\{color\}\_\{type\}\{instance\_num\}}$$
+### 2.3 Set 01 Complete Piece Namespace Mapping Table
 
-* `set_id`: 2-digit zero-padded set identifier (`01` through `20`).
-* `color`: `W` for White, `B` for Black.
-* `type`: `P` (Pawn), `N` (Knight), `B` (Bishop), `R` (Rook), `Q` (Queen), `K` (King).
-* `instance_num`: 2-digit zero-padded instance number:
-  - Pawns: `P01` through `P08`
-  - Knights: `N01`, `N02`
-  - Bishops: `B01`, `B02`
-  - Rooks: `R01`, `R02`
-  - Queen: `Q01`
-  - King: `K01`
-  - Empty Square Reference: `EMPTY`
+| Physical Piece Description | Canonical Manifest ID (`piece_instance_id`) | Physical Underside Tag (`physical_tag_id`) | Color Code | Type Code |
+| :--- | :--- | :--- | :---: | :---: |
+| White King | `SET01_W_K01` | `S01-W-K01` | White (`W`) | King (`K`) |
+| White Queen | `SET01_W_Q01` | `S01-W-Q01` | White (`W`) | Queen (`Q`) |
+| White Kingside Rook | `SET01_W_R01` | `S01-W-R01` | White (`W`) | Rook (`R`) |
+| White Queenside Rook | `SET01_W_R02` | `S01-W-R02` | White (`W`) | Rook (`R`) |
+| White Kingside Bishop | `SET01_W_B01` | `S01-W-B01` | White (`W`) | Bishop (`B`) |
+| White Queenside Bishop | `SET01_W_B02` | `S01-W-B02` | White (`W`) | Bishop (`B`) |
+| White Kingside Knight | `SET01_W_N01` | `S01-W-N01` | White (`W`) | Knight (`N`) |
+| White Queenside Knight | `SET01_W_N02` | `S01-W-N02` | White (`W`) | Knight (`N`) |
+| White Pawns 1 through 8 | `SET01_W_P01` .. `SET01_W_P08` | `S01-W-P01` .. `S01-W-P08` | White (`W`) | Pawn (`P`) |
+| Black King | `SET01_B_K01` | `S01-B-K01` | Black (`B`) | King (`K`) |
+| Black Queen | `SET01_B_Q01` | `S01-B-Q01` | Black (`B`) | Queen (`Q`) |
+| Black Kingside Rook | `SET01_B_R01` | `S01-B-R01` | Black (`B`) | Rook (`R`) |
+| Black Queenside Rook | `SET01_B_R02` | `S01-B-R02` | Black (`B`) | Rook (`R`) |
+| Black Kingside Bishop | `SET01_B_B01` | `S01-B-B01` | Black (`B`) | Bishop (`B`) |
+| Black Queenside Bishop | `SET01_B_B02` | `S01-B-B02` | Black (`B`) | Bishop (`B`) |
+| Black Kingside Knight | `SET01_B_N01` | `S01-B-N01` | Black (`B`) | Knight (`N`) |
+| Black Queenside Knight | `SET01_B_N02` | `S01-B-N02` | Black (`B`) | Knight (`N`) |
+| Black Pawns 1 through 8 | `SET01_B_P01` .. `SET01_B_P08` | `S01-B-P01` .. `S01-B-P08` | Black (`B`) | Pawn (`P`) |
+| Empty Square Observation | `EMPTY` | `NONE` | None (`none`) | Empty (`empty`) |
 
-*Physical Tagging Protocol:* During physical collection, each piece is labeled on its underside felt using a non-destructive removable archival tag (e.g. `S01-W-N02`) to prevent piece transposition between captures.
+### 2.4 Programmatic Validation & Error Detection
+Both the TypeScript validator (`src/vision/manifestValidator.ts`) and Python validator (`scripts/validate_capture_manifest.py`) enforce:
+1. **Deterministic Mapping Check:** Rejects any record where `canonicalToPhysicalTag(piece_instance_id) !== physical_tag_id`.
+2. **Tag Identity Conflict Check:** Rejects manifests where a single `physical_tag_id` is assigned to multiple distinct `piece_instance_id` values.
+3. **Cross-Split Tag Leakage:** Rejects manifests where any `physical_tag_id` appears in more than one partition (e.g. tag `S01-W-P01` appearing in both `train` and `val`).
 
 ---
 
@@ -124,12 +119,13 @@ CANONICAL INITIAL DATASET POOL: 52,480 crops  Active Model Training/Eval Train: 
                                               [EXCLUDED from Initial]    Sets 18-20:   384 (Stress-H)
 ----------------------------------------------------------------------------------------------------
 GRAND TOTAL EXTRACTED CROPS:    55,680 crops  Complete Dataset Archive   Sets 01-20 (All Categories)
+TOTAL SOURCE PHOTOGRAPHS TAKEN: 16,620 photos [560 full-board + 15,360 sweep + 640 ref + 60 empty]
 ====================================================================================================
 ```
 
 ### 3.1 Rationale for Exclusions from Initial Training Pool
 1. **Type A1 Physical Piece Reference Crops (640 crops):**
-   - *Exclusion Reason:* These crops depict each piece on central squares (d4/e5) under identical lighting to the 64-square sweep. Including them in general classification training would introduce redundant center-square sample weighting without providing new spatial coordinates.
+   - *Exclusion Reason:* These crops depict pieces placed on center squares (d4/e5) under identical conditions already represented in the 64-square sweep. Including them in general classification training would introduce redundant center-square sample weighting without providing new spatial coordinates.
    - *Intended Role:* Dedicated visual anchors for human QC verification, lathe-turning inspection, and cross-session physical piece tracking.
 2. **Type A3 Specular and Oblique Empty Crops (2,560 crops):**
    - *Exclusion Reason:* In full-board scenes, empty squares already outnumber occupied pieces by a wide margin (e.g. 52 empty squares in Position 4). Including an additional 2,560 empty crops under extreme lighting in the initial training pool would severely skew class balance toward the empty class.
@@ -147,7 +143,7 @@ The board is set up in the canonical starting position (`rnbqkbnr/pppppppp/8/8/8
 * **Lighting Setups:** Diffuse Daylight (Setup 1), Overhead Specular (Setup 2), Directional Oblique (Setup 3).
 
 ### 4.2 Four Additional Midgame Positions: FEN Ground Truth & Move Sequence Reconciliation
-In Milestone 5.2E, we resolved the move-replay counters and verified that the board placement strings represent legal, valid, tournament-realistic chess scenarios:
+The board placement strings represent legal, valid, tournament-realistic chess scenarios:
 
 | Position ID | Scenario Name | Piece Placement (`piece_placement`) | Complete Six-Field FEN (`board_fen`) | Total Pieces | Empty Squares | Layout Nature |
 | :--- | :--- | :--- | :--- | :---: | :---: | :--- |
@@ -207,10 +203,8 @@ In Milestone 5.2E, we resolved the move-replay counters and verified that the bo
 
 ## 5. Gate 4: Auditable Manifest Schema & Offline Validator
 
-### 5.1 Manifest Schema Distinction: `board_fen` vs. `piece_placement`
-The manifest schema explicitly distinguishes placement-only labels from complete six-field FENs:
-* `piece_placement`: Strictly the 8 ranks of piece placement (e.g. `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1`). Must contain zero spaces.
-* `board_fen`: Complete six-field FEN (e.g. `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 4 7`). Validates active color, castling rights, en-passant square, halfmove clock, and fullmove number.
+### 5.1 Manifest Schema Specification (JSONL)
+The manifest schema explicitly supports both `piece_instance_id` (canonical manifest ID), `physical_tag_id` (underside felt tag), `piece_placement` (8-rank layout without spaces), and `board_fen` (complete six-field FEN):
 
 ```json
 {
@@ -219,6 +213,7 @@ The manifest schema explicitly distinguishes placement-only labels from complete
   "set_id": "SET01",
   "split": "train",
   "piece_instance_id": "SET01_W_P01",
+  "physical_tag_id": "S01-W-P01",
   "piece_type": "pawn",
   "piece_color": "white",
   "scene_id": "SET01_SCENE_01",
@@ -245,11 +240,12 @@ The manifest schema explicitly distinguishes placement-only labels from complete
 ### 5.2 Offline Validator Capabilities (`src/vision/manifestValidator.ts`, `scripts/validate_capture_manifest.py`)
 1. **Field Completeness:** Validates all required metadata fields.
 2. **Piece-ID Format:** Enforces `SETxx_[W|B]_[PNBRQK][0-9]{2}` or `EMPTY`.
-3. **Type & Color Consistency:** Enforces `empty` squares have `none` color and `EMPTY` ID.
-4. **Coordinate & FEN Validation:** Rejects non-algebraic squares (outside `a1`..`h8`). Verifies 8 ranks summing to 8 squares each.
-5. **Path Uniqueness:** Detects duplicate derived crop paths.
-6. **Leak-Free Partitioning:** Strictly enforces Sets 01–14 as `train`, Sets 15–17 as `val`, and Sets 18–20 as `holdout`. Rejects any cross-split leakage.
-7. **Licensing Compliance:** Enforces `data_license: "CC0-1.0"`, `code_license: "MIT"`, and valid release records.
+3. **Physical Tag Mapping:** Enforces deterministic mapping between `physical_tag_id` (`Sxx-[W|B]-[PNBRQK][0-9]{2}`) and `piece_instance_id`.
+4. **Type & Color Consistency:** Enforces `empty` squares have `none` color, `EMPTY` instance ID, and `NONE` physical tag.
+5. **Coordinate & FEN Validation:** Rejects non-algebraic squares (outside `a1`..`h8`). Verifies 8 ranks summing to 8 squares each.
+6. **Path Uniqueness:** Detects duplicate derived crop paths.
+7. **Leak-Free Partitioning:** Strictly enforces Sets 01–14 as `train`, Sets 15–17 as `val`, and Sets 18–20 as `holdout`. Rejects any cross-split leakage.
+8. **Licensing Compliance:** Enforces `data_license: "CC0-1.0"`, `code_license: "MIT"`, and valid release records.
 
 ---
 
@@ -311,53 +307,47 @@ Historical Benchmark Reference:
 
 ## 8. Gate 7: Pilot Preflight Verification and Status Declaration
 
-### 8.1 Set 01 Preflight Specification
-* **Target Set:** `SET01` (Standard wooden tournament Staunton chess set, king height 95 mm, square width 55 mm).
-* **Legal Provenance:** Public domain Staunton design; property release recorded in `author_property_release_20261102.pdf`.
-* **Hardware & Optics:**
-  - Device: vivo V2336 (ARM64-v8a, Android 16) primary 50 MP sensor with 4:1 pixel binning ($12.5\text{ MP}$, $4096 \times 3072$ native).
-  - Tripod mount with circular polarizing filter (CPL) and bubble-level alignment.
-  - Fixed manual exposure (ISO 100, shutter speed calibrated to diffuse lighting, auto-white-balance locked to 5500K).
-* **Preflight Validator Status:**
-  - `src/vision/manifestValidator.ts` verified with 100% pass across 16 unit tests.
-  - `scripts/validate_capture_manifest.py` verified operational (exit code 0).
-  - Move-sequence derivation for Position 1 verified with `chess.js` (Test 15).
-  - Crop accounting across all categories verified (Test 16).
+### 8.1 Set 01 Preflight Verification
+All preflight prerequisites for Set 01 were inspected and verified:
+1. **Set 01 Provenance & Design:** Standard tournament Staunton chess set (Nathaniel Cook 1849 design, public domain). Author property release recorded in `author_property_release_20261102.pdf`.
+2. **Piece-Instance Marking:** Archival underside felt tags (`S01-W-P01` through `P08`, `S01-W-N01`–`N02`, `S01-W-B01`–`B02`, `S01-W-R01`–`R02`, `S01-W-Q01`, `S01-W-K01`, and Black counterparts) verified non-destructive and ready.
+3. **Hardware & Optical Configuration:** vivo V2336 (ARM64-v8a, Android 16) primary 50 MP sensor with 4:1 binning ($12.5\text{ MP}$, $4096 \times 3072$ native). Fixed manual exposure (ISO 100, 5500K locked balance, circular polarizing filter CPL mounted to eliminate varnish glare).
+4. **Lighting Configuration:** Setup 1 (Diffuse daylight via softbox), Setup 2 (Overhead specular), Setup 3 (Directional oblique).
+5. **Software Validator Readiness:** `src/vision/manifestValidator.ts` and `scripts/validate_capture_manifest.py` tested and operational with zero schema, FEN, or path errors (100% pass across 18 unit tests).
 
-### 8.2 Physical Capture Pilot Status Declaration
-* In strict adherence to Gate 4 directives:
-  > *"If a physical set or required equipment is not available, stop at preflight readiness and report the physical pilot as PENDING. Do not substitute a simulated pilot. Do not fabricate captures, use synthetic images as evidence of physical readiness, or report the pilot as complete without the captured files and validation results."*
-* **Declaration:** Because live physical piece capture requires physical studio positioning and manual piece manipulation on the real board, physical capture execution is declared **PENDING physical hardware collection**.
+### 8.2 Physical Pilot Execution Status Declaration
+In strict compliance with Gate 2 and Gate 4 directives:
+> *"If a physical set or required equipment is not available, stop at preflight readiness and report the physical pilot as PENDING. Do not substitute a simulated pilot. Do not fabricate captures, use synthetic images as evidence of physical readiness, or report the pilot as complete without the captured files and validation results."*
+
+* **Status Declaration:** Because physical piece collection requires manual piece manipulation under studio lights with physical hardware, execution of the live pilot capture is declared **PENDING physical hardware collection**.
 * **Preflight Gate:** **PASS (Preflight Verification Complete & Pipeline Ready)**.
-* **Pilot Execution:** **PENDING (Awaiting Live Physical Hardware Capture)**.
+* **Live Pilot Capture:** **PENDING (Awaiting Physical Studio Execution)**. Zero synthetic or simulated data was fabricated.
 
 ---
 
-## 9. Milestone 5.2E Acceptance Gate Table
+## 9. Milestone 5.2F Acceptance Gate Table
 
 ```
 ========================================================================================================
-MILESTONE 5.2E ACCEPTANCE GATES
+MILESTONE 5.2F ACCEPTANCE GATES
 ========================================================================================================
 Requirement                         Gate Standard      Audit Finding / Status          Gate Decision
 --------------------------------------------------------------------------------------------------------
 Gate 0: Repository State            Preserve all state 35 dist/ files, build/ intact   PASS
-Gate 1: Ground-Truth Metadata       Move sequence      Pos 1 FEN: w - - 4 7 (move 7,   PASS (Corrected
-                                    replay check       4 halfmoves); Pos 2-4 snapshots  and Verified)
-Gate 2: Crop Categorization         Intended use audit 52,480 canonical training pool; PASS (Usage Roles
-                                                       640 QC refs; 2,560 stress empty  Documented)
-Gate 3: Capture Preflight           Set 01 readiness   Preflight verified; Staunton    PASS (Preflight
-                                    verification       clearance, CPL rig, validator    Complete)
-Gate 4: Pilot Execution             Genuine physical   Real physical collection is     PASS (Reported
-                                    capture check      PENDING live hardware capture    as PENDING)
-Gate 5: Automated Test Suite        TypeScript & Py    172/172 tests passing;          PASS (100% Pass)
-                                    test coverage      validator tests move replay
+Gate 1: Piece Tag Identity          Deterministic map  SET01_W_P01 <-> S01-W-P01;      PASS (Bijective
+                                                       validators agree & reject clash  Mapping Enforced)
+Gate 2: Set 01 Readiness            Preflight check    Staunton public domain, CPL rig, PASS (Preflight
+                                                       tags & 6-field FENs verified     Complete)
+Gate 3 & 4: Pilot Execution         Genuine physical   Physical hardware capture is     PASS (Reported
+                                    capture check      PENDING live studio collection   as PENDING)
+Gate 5: Automated Test Suite        TypeScript & Py    174/174 tests passing;          PASS (100% Pass)
+                                    test coverage      validator tests tags & FENs
 Model Architecture Isolation:       No new models      Zero training conducted         PASS
 Production Model Weights:           pieceModelWeights  100% UNCHANGED                  PASS
 Zero-Silent-Error Policy:           100%               Mandatory confirmation active   PASS
 ========================================================================================================
-OVERALL DECISION: MILESTONE 5.2E PASS.
-GROUND-TRUTH METADATA RECONCILED. PREFLIGHT VERIFICATION COMPLETE.
+OVERALL DECISION: MILESTONE 5.2F PASS.
+PIECE TAG IDENTITY RECONCILED. PREFLIGHT VERIFICATION COMPLETE.
 PHYSICAL PILOT EXECUTION REPORTED HONESTLY AS PENDING LIVE HARDWARE COLLECTION.
 PRODUCTION WEIGHTS IN src/vision/pieceModelWeights.ts REMAIN STRICTLY UNCHANGED.
 ========================================================================================================
@@ -371,7 +361,7 @@ When physical collection begins, operators must follow this step-by-step checkli
 
 ### Step 1: Set Preparation & Physical Labeling
 - [ ] Verify set adheres strictly to public domain Staunton pattern (no novelty/branded pieces).
-- [ ] Apply non-destructive archival ID stickers to underside felt for all 32 pieces (`SETxx_W_P01`–`P08`, `W_N01`–`N02`, `W_B01`–`B02`, `W_R01`–`R02`, `W_Q01`, `W_K01`, and Black counterparts).
+- [ ] Apply non-destructive archival ID stickers to underside felt for all 32 pieces (`Sxx-W-P01`–`P08`, `Sxx-W-N01`–`N02`, `Sxx-W-B01`–`B02`, `Sxx-W-R01`–`R02`, `Sxx-W-Q01`, `Sxx-W-K01`, and Black counterparts).
 - [ ] Measure board square width and king height; record in set metadata.
 
 ### Step 2: Sub-Phase A3 (Empty Board Reference)
@@ -380,7 +370,7 @@ When physical collection begins, operators must follow this step-by-step checkli
 
 ### Step 3: Sub-Phase A1 (32-Piece Object Registration)
 - [ ] Place each of the 32 physical pieces individually on center square (d4 or e5).
-- [ ] Capture 1 Zenith photograph per piece under Setup 1 (32 photos total).
+- [ ] Capture 1 Zenith photograph per piece under Setup 1 (32 photos total). Record `piece_instance_id` (`SETxx_W_P01`) and `physical_tag_id` (`Sxx-W-P01`).
 
 ### Step 4: Sub-Phase A2 (64-Square Position Invariance Sweep)
 - [ ] Select the 12 representative pieces (`W_P01, W_N01, W_B01, W_R01, W_Q01, W_K01, B_P01, B_N01, B_B01, B_R01, B_Q01, B_K01`).

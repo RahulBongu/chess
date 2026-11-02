@@ -19,7 +19,25 @@ from typing import Any, Dict, List, Set, Tuple
 
 SET_ID_REGEX = re.compile(r"^SET[0-9]{2}$")
 PIECE_INSTANCE_REGEX = re.compile(r"^SET[0-9]{2}_[WB]_[PNBRQK][0-9]{2}$")
+PHYSICAL_TAG_REGEX = re.compile(r"^S[0-9]{2}-[WB]-[PNBRQK][0-9]{2}$")
 SQUARE_REGEX = re.compile(r"^[a-h][1-8]$")
+
+def canonical_to_physical_tag(canonical_id: str) -> str:
+    if not canonical_id or canonical_id == "EMPTY":
+        return "NONE"
+    m = re.match(r"^SET([0-9]{2})_([WB])_([PNBRQK][0-9]{2})$", canonical_id)
+    if not m:
+        return "INVALID"
+    return f"S{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+
+def physical_tag_to_canonical(physical_tag: str) -> str:
+    if not physical_tag or physical_tag in ("NONE", "EMPTY"):
+        return "EMPTY"
+    m = re.match(r"^S([0-9]{2})-([WB])-([PNBRQK][0-9]{2})$", physical_tag)
+    if not m:
+        return "INVALID"
+    return f"SET{m.group(1)}_{m.group(2)}_{m.group(3)}"
 
 VALID_PIECE_TYPES = {"pawn", "knight", "bishop", "rook", "queen", "king", "empty"}
 VALID_PIECE_COLORS = {"white", "black", "none"}
@@ -215,6 +233,23 @@ def validate_record(r: Dict[str, Any], idx: int) -> List[str]:
             if piece_type in TYPE_CHAR_MAP and instance_id[8] != TYPE_CHAR_MAP[piece_type]:
                 errors.append(f"{prefix} Instance type char '{instance_id[8]}' does not match '{piece_type}'")
 
+    # Physical tag ID validation & deterministic mapping (Gate 1)
+    physical_tag = r.get("physical_tag_id")
+    if physical_tag is not None and str(physical_tag).strip():
+        tag = str(physical_tag).strip()
+        if piece_type == "empty":
+            if tag not in ("NONE", "EMPTY"):
+                errors.append(f"{prefix} Empty square 'physical_tag_id' must be 'NONE' or 'EMPTY', got '{tag}'")
+        else:
+            if not PHYSICAL_TAG_REGEX.match(tag):
+                errors.append(f"{prefix} Invalid 'physical_tag_id': '{tag}'. Expected format Sxx-W-P01 (e.g. S01-W-P01).")
+            else:
+                expected_tag = canonical_to_physical_tag(instance_id)
+                if tag != expected_tag:
+                    errors.append(
+                        f"{prefix} Physical tag ID '{tag}' does not deterministically map to piece_instance_id '{instance_id}' (expected '{expected_tag}')."
+                    )
+
     crop_type = str(r.get("crop_type", ""))
     if crop_type not in VALID_CROP_TYPES:
         errors.append(f"{prefix} Unknown 'crop_type': '{crop_type}'")
@@ -280,10 +315,13 @@ def validate_manifest(records: List[Dict[str, Any]]) -> Tuple[bool, List[str], D
     errors: List[str] = []
     sets_seen: Set[str] = set()
     instances_seen: Set[str] = set()
+    tags_seen: Set[str] = set()
     scenes_seen: Set[str] = set()
     paths_seen: Dict[str, int] = {}
     set_split_map: Dict[str, str] = {}
     piece_split_map: Dict[str, str] = {}
+    tag_piece_map: Dict[str, str] = {}
+    tag_split_map: Dict[str, str] = {}
 
     crops_by_type: Dict[str, int] = defaultdict(int)
     crops_by_split: Dict[str, int] = defaultdict(int)
@@ -299,6 +337,7 @@ def validate_manifest(records: List[Dict[str, Any]]) -> Tuple[bool, List[str], D
         split = str(r.get("split", ""))
         instance_id = str(r.get("piece_instance_id", ""))
         crop_path = str(r.get("derived_crop_path", ""))
+        physical_tag = r.get("physical_tag_id")
 
         if set_id:
             sets_seen.add(set_id)
@@ -322,6 +361,24 @@ def validate_manifest(records: List[Dict[str, Any]]) -> Tuple[bool, List[str], D
                 else:
                     piece_split_map[instance_id] = split
 
+        if physical_tag and str(physical_tag).strip() not in ("NONE", "EMPTY"):
+            tag_str = str(physical_tag).strip()
+            tags_seen.add(tag_str)
+            if instance_id:
+                if tag_str in tag_piece_map and tag_piece_map[tag_str] != instance_id:
+                    errors.append(
+                        f"[Tag Conflict] Physical tag '{tag_str}' mapped to multiple pieces: '{tag_piece_map[tag_str]}' and '{instance_id}'"
+                    )
+                else:
+                    tag_piece_map[tag_str] = instance_id
+            if split:
+                if tag_str in tag_split_map and tag_split_map[tag_str] != split:
+                    errors.append(
+                        f"[Tag Leakage] Physical tag '{tag_str}' appears in multiple splits: '{tag_split_map[tag_str]}' and '{split}'"
+                    )
+                else:
+                    tag_split_map[tag_str] = split
+
         if crop_path:
             if crop_path in paths_seen:
                 errors.append(
@@ -341,6 +398,7 @@ def validate_manifest(records: List[Dict[str, Any]]) -> Tuple[bool, List[str], D
         "total_records": len(records),
         "distinct_sets": sorted(list(sets_seen)),
         "distinct_piece_instances": sorted(list(instances_seen)),
+        "distinct_physical_tags": sorted(list(tags_seen)),
         "distinct_scenes": sorted(list(scenes_seen)),
         "crops_by_type": dict(crops_by_type),
         "crops_by_split": dict(crops_by_split),
@@ -374,6 +432,7 @@ def main():
     print(f"Total Records:             {summary.get('total_records', 0)}")
     print(f"Distinct Physical Sets:    {len(summary.get('distinct_sets', []))} {summary.get('distinct_sets', [])}")
     print(f"Distinct Piece Instances:  {len(summary.get('distinct_piece_instances', []))}")
+    print(f"Distinct Physical Tags:    {len(summary.get('distinct_physical_tags', []))}")
     print(f"Distinct Scenes:           {len(summary.get('distinct_scenes', []))}")
     print("Crops by Type:")
     for ct, count in summary.get("crops_by_type", {}).items():
