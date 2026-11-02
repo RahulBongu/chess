@@ -1,6 +1,6 @@
 /**
  * Physical Capture Manifest Schema and Offline Validator
- * Milestone 5.2C: Data-capture preparation, piece-instance tracking, and license gating.
+ * Milestone 5.2D: Data-capture preparation, piece-instance tracking, FEN validation, and license gating.
  */
 
 export type PieceType = 'pawn' | 'knight' | 'bishop' | 'rook' | 'queen' | 'king' | 'empty';
@@ -23,6 +23,7 @@ export interface CaptureManifestRecord {
   piece_color: PieceColor;
   scene_id: string;
   board_fen: string | null;
+  piece_placement?: string | null;
   square_coord: string | null;
   camera_angle: CameraAngle;
   lighting_setup: LightingSetup;
@@ -38,6 +39,15 @@ export interface CaptureManifestRecord {
   permission_status: PermissionStatus;
   annotation_status: AnnotationStatus;
   quality_notes?: string;
+}
+
+export interface PiecePlacementCountSummary {
+  white: Record<string, number>;
+  black: Record<string, number>;
+  totalWhite: number;
+  totalBlack: number;
+  totalPieces: number;
+  emptySquares: number;
 }
 
 export interface ManifestSummary {
@@ -124,28 +134,156 @@ export function getExpectedSplitForSet(setId: string): SplitPartition | null {
 }
 
 /**
+ * Counts pieces by class and color from an 8-rank FEN placement string.
+ */
+export function countPiecesInPlacement(placement: string): PiecePlacementCountSummary {
+  const white: Record<string, number> = {};
+  const black: Record<string, number> = {};
+  let totalWhite = 0;
+  let totalBlack = 0;
+  let emptySquares = 0;
+
+  if (!placement || typeof placement !== 'string') {
+    return { white, black, totalWhite: 0, totalBlack: 0, totalPieces: 0, emptySquares: 64 };
+  }
+
+  const firstToken = placement.trim().split(/\s+/)[0];
+  const ranks = firstToken.split('/');
+
+  for (const rank of ranks) {
+    for (const ch of rank) {
+      if (ch >= '1' && ch <= '8') {
+        emptySquares += parseInt(ch, 10);
+      } else if ('PNBRQK'.includes(ch)) {
+        white[ch] = (white[ch] || 0) + 1;
+        totalWhite++;
+      } else if ('pnbrqk'.includes(ch)) {
+        black[ch] = (black[ch] || 0) + 1;
+        totalBlack++;
+      }
+    }
+  }
+
+  return {
+    white,
+    black,
+    totalWhite,
+    totalBlack,
+    totalPieces: totalWhite + totalBlack,
+    emptySquares,
+  };
+}
+
+/**
+ * Validates a placement-only string (strictly 8 ranks, no spaces, exactly 8 squares per rank).
+ */
+export function validatePlacementOnly(placement: string): { valid: boolean; error?: string } {
+  if (!placement || typeof placement !== 'string') {
+    return { valid: false, error: 'Placement string is empty or invalid.' };
+  }
+  const trimmed = placement.trim();
+  if (trimmed.includes(' ')) {
+    return {
+      valid: false,
+      error: "Placement string must not contain spaces (use complete FEN for 6-field strings).",
+    };
+  }
+  const ranks = trimmed.split('/');
+  if (ranks.length !== 8) {
+    return { valid: false, error: `Placement must contain exactly 8 ranks separated by '/', got ${ranks.length}.` };
+  }
+  for (let r = 0; r < 8; r++) {
+    const rank = ranks[r];
+    let count = 0;
+    for (const ch of rank) {
+      if (ch >= '1' && ch <= '8') {
+        count += parseInt(ch, 10);
+      } else if ('pnbrqkPNBRQK'.includes(ch)) {
+        count += 1;
+      } else {
+        return { valid: false, error: `Invalid character '${ch}' in rank ${8 - r}.` };
+      }
+    }
+    if (count !== 8) {
+      return { valid: false, error: `Rank ${8 - r} has ${count} squares instead of 8.` };
+    }
+  }
+  return { valid: true };
+}
+
+/**
+ * Validates a complete six-field FEN string.
+ */
+export function validateCompleteFen(fen: string): { valid: boolean; error?: string } {
+  if (!fen || typeof fen !== 'string') {
+    return { valid: false, error: 'FEN string is empty or invalid.' };
+  }
+  const tokens = fen.trim().split(/\s+/);
+  if (tokens.length !== 6) {
+    return {
+      valid: false,
+      error: `Complete FEN must contain exactly 6 space-separated fields, got ${tokens.length}. Use 'piece_placement' if only specifying placement.`,
+    };
+  }
+
+  const [placement, activeColor, castling, enPassant, halfmove, fullmove] = tokens;
+
+  // Field 1: Placement
+  const placementCheck = validatePlacementOnly(placement);
+  if (!placementCheck.valid) {
+    return placementCheck;
+  }
+
+  // Field 2: Active Color
+  if (activeColor !== 'w' && activeColor !== 'b') {
+    return { valid: false, error: `Active color must be 'w' or 'b', got '${activeColor}'.` };
+  }
+
+  // Field 3: Castling Rights
+  if (castling !== '-') {
+    const validChars = new Set(['K', 'Q', 'k', 'q']);
+    const seen = new Set<string>();
+    for (const ch of castling) {
+      if (!validChars.has(ch) || seen.has(ch)) {
+        return { valid: false, error: `Invalid castling rights string: '${castling}'.` };
+      }
+      seen.add(ch);
+    }
+  }
+
+  // Field 4: En Passant
+  if (enPassant !== '-') {
+    if (!/^[a-h][36]$/.test(enPassant)) {
+      return {
+        valid: false,
+        error: `Invalid en-passant square: '${enPassant}'. Must be '-' or a valid square on rank 3 or 6.`,
+      };
+    }
+  }
+
+  // Field 5: Halfmove Clock
+  const half = parseInt(halfmove, 10);
+  if (isNaN(half) || half < 0 || String(half) !== halfmove) {
+    return { valid: false, error: `Invalid halfmove clock: '${halfmove}'. Must be a non-negative integer.` };
+  }
+
+  // Field 6: Fullmove Number
+  const full = parseInt(fullmove, 10);
+  if (isNaN(full) || full < 1 || String(full) !== fullmove) {
+    return { valid: false, error: `Invalid fullmove number: '${fullmove}'. Must be a positive integer >= 1.` };
+  }
+
+  return { valid: true };
+}
+
+/**
  * Validates FEN placement string syntax (8 ranks, each totaling 8 squares).
+ * Retained for backwards compatibility; validates first token if multi-token.
  */
 export function validateFenPlacement(fen: string): boolean {
   if (!fen || typeof fen !== 'string') return false;
   const placement = fen.trim().split(/\s+/)[0];
-  const ranks = placement.split('/');
-  if (ranks.length !== 8) return false;
-
-  for (const rank of ranks) {
-    let count = 0;
-    for (const char of rank) {
-      if (char >= '1' && char <= '8') {
-        count += parseInt(char, 10);
-      } else if ('pnbrqkPNBRQK'.includes(char)) {
-        count += 1;
-      } else {
-        return false;
-      }
-    }
-    if (count !== 8) return false;
-  }
-  return true;
+  return validatePlacementOnly(placement).valid;
 }
 
 /**
@@ -259,10 +397,36 @@ export function validateManifestRecord(
     }
   }
 
-  // FEN validation (required for full_board_context and full_board_raw)
+  // FEN / Placement validation (required for full_board_context and full_board_raw)
   if (record.crop_type === 'full_board_context' || record.crop_type === 'full_board_raw') {
-    if (!record.board_fen || !validateFenPlacement(record.board_fen)) {
-      errors.push(`${prefix} Missing or invalid 'board_fen' for full-board crop: '${record.board_fen}'.`);
+    if (record.board_fen) {
+      const fenTokens = record.board_fen.trim().split(/\s+/);
+      if (fenTokens.length === 6) {
+        const fenCheck = validateCompleteFen(record.board_fen);
+        if (!fenCheck.valid) {
+          errors.push(`${prefix} Invalid complete 6-field 'board_fen': ${fenCheck.error}`);
+        }
+      } else {
+        // Placement-only provided in board_fen field
+        if (!validateFenPlacement(record.board_fen)) {
+          errors.push(`${prefix} Invalid placement syntax in 'board_fen': '${record.board_fen}'.`);
+        }
+      }
+    } else if (record.piece_placement) {
+      const placeCheck = validatePlacementOnly(record.piece_placement);
+      if (!placeCheck.valid) {
+        errors.push(`${prefix} Invalid 'piece_placement': ${placeCheck.error}`);
+      }
+    } else {
+      errors.push(`${prefix} Missing required 'board_fen' or 'piece_placement' for full-board crop.`);
+    }
+  }
+
+  // Validate standalone piece_placement if present
+  if (record.piece_placement) {
+    const placeCheck = validatePlacementOnly(record.piece_placement);
+    if (!placeCheck.valid) {
+      errors.push(`${prefix} Invalid 'piece_placement': ${placeCheck.error}`);
     }
   }
 

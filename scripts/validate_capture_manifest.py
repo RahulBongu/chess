@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-validate_capture_manifest.py - Milestone 5.2C Offline Manifest Validator
+validate_capture_manifest.py - Milestone 5.2D Offline Manifest Validator
 
 Validates physical capture manifest JSONL files against schema constraints,
-piece instance naming, FEN placement syntax, licensing provenance,
-and strict cross-split leakage prevention.
+piece instance naming, FEN placement vs 6-field complete FEN syntax,
+licensing provenance, and strict cross-split leakage prevention.
 
 Usage:
     python scripts/validate_capture_manifest.py <manifest_file.jsonl>
@@ -56,14 +56,16 @@ def get_expected_split(set_id: str) -> str:
     return ""
 
 
-def validate_fen(fen: str) -> bool:
-    if not fen:
-        return False
-    placement = fen.strip().split()[0]
-    ranks = placement.split("/")
+def validate_placement_only(placement: str) -> Tuple[bool, str]:
+    if not placement or not isinstance(placement, str):
+        return False, "Placement string is empty or invalid."
+    trimmed = placement.strip()
+    if " " in trimmed:
+        return False, "Placement string must not contain spaces (use complete FEN for 6-field strings)."
+    ranks = trimmed.split("/")
     if len(ranks) != 8:
-        return False
-    for rank in ranks:
+        return False, f"Placement must contain exactly 8 ranks separated by '/', got {len(ranks)}."
+    for r_idx, rank in enumerate(ranks):
         count = 0
         for ch in rank:
             if ch.isdigit():
@@ -71,10 +73,97 @@ def validate_fen(fen: str) -> bool:
             elif ch in "pnbrqkPNBRQK":
                 count += 1
             else:
-                return False
+                return False, f"Invalid character '{ch}' in rank {8 - r_idx}."
         if count != 8:
-            return False
-    return True
+            return False, f"Rank {8 - r_idx} has {count} squares instead of 8."
+    return True, ""
+
+
+def validate_complete_fen(fen: str) -> Tuple[bool, str]:
+    if not fen or not isinstance(fen, str):
+        return False, "FEN string is empty or invalid."
+    tokens = fen.strip().split()
+    if len(tokens) != 6:
+        return False, f"Complete FEN must contain exactly 6 space-separated fields, got {len(tokens)}."
+
+    placement, active_color, castling, en_passant, halfmove, fullmove = tokens
+
+    valid_place, err = validate_placement_only(placement)
+    if not valid_place:
+        return False, err
+
+    if active_color not in ("w", "b"):
+        return False, f"Active color must be 'w' or 'b', got '{active_color}'."
+
+    if castling != "-":
+        valid_chars = {"K", "Q", "k", "q"}
+        seen = set()
+        for ch in castling:
+            if ch not in valid_chars or ch in seen:
+                return False, f"Invalid castling rights string: '{castling}'."
+            seen.add(ch)
+
+    if en_passant != "-":
+        if not re.match(r"^[a-h][36]$", en_passant):
+            return False, f"Invalid en-passant square: '{en_passant}'."
+
+    try:
+        half = int(halfmove)
+        if half < 0 or str(half) != halfmove:
+            return False, f"Invalid halfmove clock: '{halfmove}'."
+    except ValueError:
+        return False, f"Invalid halfmove clock: '{halfmove}'."
+
+    try:
+        full = int(fullmove)
+        if full < 1 or str(full) != fullmove:
+            return False, f"Invalid fullmove number: '{fullmove}'."
+    except ValueError:
+        return False, f"Invalid fullmove number: '{fullmove}'."
+
+    return True, ""
+
+
+def validate_fen(fen: str) -> bool:
+    if not fen:
+        return False
+    tokens = fen.strip().split()
+    if len(tokens) == 6:
+        valid, _ = validate_complete_fen(fen)
+        return valid
+    placement = tokens[0]
+    valid, _ = validate_placement_only(placement)
+    return valid
+
+
+def count_pieces_in_placement(placement: str) -> Dict[str, Any]:
+    white: Dict[str, int] = defaultdict(int)
+    black: Dict[str, int] = defaultdict(int)
+    empty_squares = 0
+    if not placement:
+        return {"white": {}, "black": {}, "total_white": 0, "total_black": 0, "total_pieces": 0, "empty_squares": 64}
+
+    first_token = placement.strip().split()[0]
+    ranks = first_token.split("/")
+    for rank in ranks:
+        for ch in rank:
+            if ch.isdigit():
+                empty_squares += int(ch)
+            elif ch in "PNBRQK":
+                white[ch] += 1
+            elif ch in "pnbrqk":
+                black[ch] += 1
+
+    total_w = sum(white.values())
+    total_b = sum(black.values())
+    return {
+        "white": dict(white),
+        "black": dict(black),
+        "total_white": total_w,
+        "total_black": total_b,
+        "total_pieces": total_w + total_b,
+        "empty_squares": empty_squares,
+    }
 
 
 def validate_record(r: Dict[str, Any], idx: int) -> List[str]:
@@ -135,10 +224,31 @@ def validate_record(r: Dict[str, Any], idx: int) -> List[str]:
         if not SQUARE_REGEX.match(square):
             errors.append(f"{prefix} Invalid 'square_coord': '{square}'. Must be a1-h8.")
 
+    # FEN and placement validation
     if crop_type in ("full_board_context", "full_board_raw"):
-        fen = str(r.get("board_fen", ""))
-        if not validate_fen(fen):
-            errors.append(f"{prefix} Missing or invalid 'board_fen' for full-board crop: '{fen}'")
+        board_fen = r.get("board_fen")
+        piece_placement = r.get("piece_placement")
+        if board_fen:
+            tokens = str(board_fen).strip().split()
+            if len(tokens) == 6:
+                valid_fen, fen_err = validate_complete_fen(str(board_fen))
+                if not valid_fen:
+                    errors.append(f"{prefix} Invalid complete 6-field 'board_fen': {fen_err}")
+            else:
+                valid_place, place_err = validate_placement_only(tokens[0])
+                if not valid_place:
+                    errors.append(f"{prefix} Invalid placement syntax in 'board_fen': {place_err}")
+        elif piece_placement:
+            valid_place, place_err = validate_placement_only(str(piece_placement))
+            if not valid_place:
+                errors.append(f"{prefix} Invalid 'piece_placement': {place_err}")
+        else:
+            errors.append(f"{prefix} Missing required 'board_fen' or 'piece_placement' for full-board crop.")
+
+    if r.get("piece_placement"):
+        valid_place, place_err = validate_placement_only(str(r["piece_placement"]))
+        if not valid_place:
+            errors.append(f"{prefix} Invalid standalone 'piece_placement': {place_err}")
 
     if r.get("camera_angle") not in VALID_ANGLES:
         errors.append(f"{prefix} Unknown 'camera_angle': '{r.get('camera_angle')}'")

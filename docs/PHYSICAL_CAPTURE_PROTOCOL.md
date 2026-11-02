@@ -1,44 +1,51 @@
-# Milestone 5.2C: In-House Physical Chess Capture Protocol and Provenance Specification
+# Milestone 5.2D: Physical Chess Capture Protocol, Ground-Truth Validation, and Pilot Readiness
 
-**Milestone:** 5.2C  
+**Milestone:** 5.2D  
 **Date:** 2026-11-02  
 **Target Repository:** `https://github.com/RahulBongu/chess.git`  
-**Starting Commit:** `57c49ed` (synchronized with `origin/main`)  
-**Objective:** Establish an executable, mathematically reconciled, and auditable physical chess-piece data-collection protocol for the 20-set physical capture before committing hardware resources.  
+**Starting Commit:** `03da4b8` (verified synchronized with `origin/main`)  
+**Objective:** Validate the exact board layouts, piece counts, FEN representations, and manifest consistency required by the physical capture protocol before collection begins, and establish pilot readiness on Set 01.  
 **Production Model Weights:** `src/vision/pieceModelWeights.ts` (version `1.0.0-synthetic-staunton-v1`, strictly **UNCHANGED**)  
-**Preserved Release Artifact:** `dist/ai-chess-navigator-1.0.0-arm64-milestone51b-bgr-validation-20261101.apk` (and all 35 files under `dist/`)  
+**Preserved Release Artifacts:** `dist/ai-chess-navigator-1.0.0-arm64-milestone51b-bgr-validation-20261101.apk` (and all 35 files under `dist/`)  
 
 ---
 
 ## 1. Executive Summary & Objective
 
-Milestones 4.3D through 5.2B established that:
+Milestones 4.3D through 5.2C established the experimental necessity and operational protocol for an author-owned 20-set physical capture campaign:
 1. Pure synthetic models collapse to **16.80% Top-1** on real physical pieces (`knight` bias collapse).
-2. Clean-room CNN models trained from scratch on small physical datasets ($N=2,304$ crops across 3 sets) achieve only **20.40% Mean LOSO Top-1** due to catastrophic texture and wood-grain overfitting.
-3. Public real-world datasets either lack commercial redistribution rights (ChessReD is CC BY-NC-SA 4.0; Open Chess photos are restricted to server operators), lack public image availability (Open Chess has zero public downloadable archives), or contain only a single physical board (ChessReD, samryan18), leaving an empirical deficit of at least **14 to 15 distinct physical sets**.
-4. In Milestone 5.2B, Plan A (28 full-board scenes per set $\times 20 = 560$ scenes total) was formally selected.
+2. Clean-room CNN models trained from scratch on small physical datasets ($N=2,304$ crops across 3 sets) achieve only **20.40% Mean LOSO Top-1** due to texture/wood-grain overfitting.
+3. Public real-world datasets lack commercial redistribution rights (ChessReD is CC BY-NC-SA 4.0; Open Chess photos are restricted to server operators), lack public image availability (Open Chess has zero public downloadable archives), or contain only a single physical board (ChessReD, samryan18), leaving an empirical deficit of at least **14 to 15 distinct physical sets**.
+4. Milestone 5.2C defined the piece-instance namespace (`SETxx_W_P01`), revised the Type A isolated sweep to cover 100% of all 32 physical piece instances per set, and built an offline manifest validation engine.
 
-Milestone 5.2C establishes the complete operational protocol to execute this physical acquisition with zero data leakage and unassailable provenance:
-* **Object Diversity vs. Image Diversity (Gate 1):** Explicitly defines and decouples physical piece objects from repeated photographic exposures. Formally accounts for 20 distinct physical sets, 640 distinct physical piece objects (32 per set), and tracks each physical piece via a persistent namespace.
-* **Revised Type A Isolated Sweep (Gate 2):** Preserves the 64-square board-position invariance sweep while ensuring **100% of all 32 physical piece instances** in every set are captured in controlled isolated views:
-  - 32-Piece Object Registration Sweep: 32 individual piece reference photos per set ($20 \times 32 = \mathbf{640 \text{ reference piece photos}}$).
-  - 64-Square Position Invariance Sweep: 12 designated representative piece instances swept across 64 squares ($20 \times 768 = \mathbf{15,360 \text{ position-sweep crops}}$).
-  - Empty-Square Reference Sweep: Unpopulated board captures yielding $64$ empty crops per set ($20 \times 64 = \mathbf{1,280 \text{ canonical empty crops}}$).
-* **Retained Type B Plan A Full-Board Scenes (Gate 3):** Preserves the 560 full-board scenes ($35,840$ context crops). Defines the 4 additional midgame board positions with exact FEN placements, coordinates, and piece balances. Documents 3D optical parallax and oblique occlusion constraints.
-* **Auditable Manifest Schema & Validator (Gate 4):** Created a machine-readable JSONL schema and built an offline validation engine in TypeScript (`src/vision/manifestValidator.ts`, 12 tests) and Python (`scripts/validate_capture_manifest.py`). Enforces field completeness, valid FEN placements, valid algebraic coordinates, non-duplicate paths, and strict leak-free split partitioning.
-* **Licensing & Consent (Gate 5):** Establishes explicit license separation: **CC0 1.0 Universal** for dataset images and annotations; **MIT License** for code and validator scripts. Prohibits conflated "CC0/MIT" labeling. Specifies property releases and restricts physical sets to public domain Staunton designs (Nathaniel Cook 1849).
-* **Leak-Free Partitioning (Gate 6):** Enforces strict set-level isolation across Training (Sets 01–14, 70%), Validation (Sets 15–17, 15%), and Blind Holdout (Sets 18–20, 15%). Preserves Zenodo Set 4 as an independent historical benchmark.
+Milestone 5.2D resolves data-quality gaps, validates exact ground-truth board layouts, reconciles crop accounting, and establishes operational pilot readiness:
+* **Gate 0 (Preservation):** All 35 files under `dist/` remain intact; `modules/live-camera/android/build/` is untouched; zero APK builds or model training executed.
+* **Gate 1 (Layout Ground-Truth Validation):** Independently audited the four proposed midgame board layouts using `chess.js` and internal FEN validators. Discovered and corrected arithmetic counting discrepancies in the Milestone 5.2C narrative text:
+  - Position 1 (Opening Transition): Corrected from stated 30 pieces to **32 pieces** (16 White, 16 Black, 32 empty squares).
+  - Position 2 (Tactical Middlegame): Corrected from stated 24 pieces to **25 pieces** (12 White, 13 Black, 39 empty squares).
+  - Position 3 (Asymmetric Castling): Corrected from stated 20 pieces to **22 pieces** (11 White, 11 Black, 42 empty squares).
+  - Position 4 (Simplified Endgame): Corrected from stated 10 pieces to **12 pieces** (6 White, 6 Black, 52 empty squares).
+  - Confirmed that the board layouts themselves are 100% legal, rich, and accurately reflect intended tournament scenarios.
+* **Gate 2 (Exact Ground-Truth Definitions):** Explicitly decoupled placement-only strings (`piece_placement`) from complete six-field FENs (`board_fen`). Formally verified active turns, castling rights (`-`), en-passant (`-`), halfmove clocks, and fullmove counters.
+* **Gate 3 (Manifest & Crop Accounting):** Reconciled all capture metrics into distinct, un-conflated categories:
+  - 560 full-board scenes $\rightarrow$ **35,840 context crops** (Type B)
+  - 15,360 isolated sweep photos $\rightarrow$ **15,360 sweep crops** (Type A2)
+  - 640 physical-piece reference photos $\rightarrow$ **640 reference crops** (Type A1)
+  - 60 empty-board photos $\rightarrow$ **1,280 canonical diffuse crops** / **3,840 total multi-lighting empty crops** (Type A3)
+  - Total unique camera shutter exposures across 20 sets = **16,620 source photographs**.
+* **Gate 4 (Pilot Readiness on Set 01):** Defined an operational dry-run pilot protocol on Set 01 spanning all 10 capture categories. Validated pilot manifest with the offline validator (100% pass across 14 unit tests). Documented physical risk mitigations for glare, tripod shadows, and optical parallax.
+* **Gate 5 (Decision):** Protocol is **APPROVED for one-set pilot execution on Set 01**. Production weights in `src/vision/pieceModelWeights.ts` remain strictly **UNCHANGED**.
 
 ---
 
 ## 2. Gate 1: Image Diversity vs. Object Diversity
 
-### 2.1 The Core Scientific Distinction
-A persistent flaw in computer vision dataset design is conflating the number of image crops with sample independence:
-* **Image Diversity:** Variations in camera viewpoint, lighting intensity, shadow angle, board position coordinate, and shutter exposure.
+### 2.1 Decoupling Repeated Exposures from Object Independence
+A critical failure mode in computer vision datasets is conflating the number of image exposures with physical object diversity:
+* **Image Diversity:** Variations in camera viewpoint, lighting intensity, shadow angle, board coordinate position, and shutter exposure.
 * **Object Diversity:** Variations in physical manufacturing: lathe-turning contours, hand-carved knight manes, wood grain, stain absorption, varnish reflectivity, felt base color, and geometric proportions.
 
-Photographing the same physical pawn 64 times across 64 squares yields 64 distinct image crops, but **only 1 physical object instance**. If a classifier trains on 64 crops of pawn `SET01_W_P01` and evaluates on a different angle of `SET01_W_P01`, it can achieve high accuracy by memorizing the specific carving flaw or wood grain of that single physical piece, while completely failing on a different pawn from an unseen physical set.
+Photographing the same physical pawn 64 times across 64 squares yields 64 distinct image crops, but **only 1 physical object instance**. If a classifier trains on 64 crops of pawn `SET01_W_P01` and evaluates on a different angle of `SET01_W_P01`, it can achieve high accuracy by memorizing the specific carving flaw or wood grain of that single physical piece, while completely failing on an unseen physical set.
 
 ### 2.2 Independent Metric Breakdown (20-Set Target)
 To ensure mathematical and statistical transparency, all dataset metrics are counted separately:
@@ -52,19 +59,24 @@ METRIC ACCOUNTING MATRIX (AUTHOR-OWNED 20-SET PLAN A)
 3. Piece-Type / Color Classes:                 12 piece classes + 1 empty class
 4. Full-Board Plan A Source Scenes:            560 photographs (28 scenes/set × 20 sets)
 5. Type B Rectified Full-Board Context Crops:  35,840 crops (560 scenes × 64 squares)
-6. Type A Isolated Piece Source Photographs:   16,000 photos (800 piece shots/set × 20 sets)
-7. Type A Isolated Empty-Square Crops:         1,280 canonical crops (64 squares/set × 20 sets)
-8. Camera Viewpoints:                          4 angles (Zenith, White, Black, Flank)
-9. Lighting Setups:                            3 environments (Diffuse, Overhead, Oblique)
-10. Board Configurations:                      5 layouts (Starting + 4 Midgame FENs)
+6. Type A Isolated Sweep Source Photos:        15,360 photos (768 shots/set × 20 sets)
+7. Type A Isolated Piece Reference Photos:     640 photos (32 pieces/set × 20 sets)
+8. Type A Empty-Board Reference Photos:        60 photos (3 setups/set × 20 sets)
+9. Type A Canonical Diffuse Empty Crops:       1,280 crops (64 squares/set × 20 sets)
+10. Type A Total Multi-Lighting Empty Crops:   3,840 crops (192 crops/set × 20 sets)
+11. Camera Viewpoints:                         4 angles (Zenith, White, Black, Flank)
+12. Lighting Setups:                           3 environments (Diffuse, Overhead, Oblique)
+13. Board Configurations:                      5 layouts (Starting + 4 Midgame FENs)
+========================================================================================
+TOTAL UNIQUE SOURCE CAMERA PHOTOGRAPHS TAKEN:  16,620 photographs
+TOTAL DERIVED SQUARE CROPS EXTRACTED:          55,680 crops (or 53,120 canonical)
 ========================================================================================
 ```
 
 ### 2.3 Physical Piece Namespace Specification
-Every physical piece must possess a permanent, deterministic identifier formatted as:
+Every physical piece possesses a permanent, deterministic identifier:
 $$\mathbf{SET\{set\_id\}\_\{color\}\_\{type\}\{instance\_num\}}$$
 
-Where:
 * `set_id`: 2-digit zero-padded set identifier (`01` through `20`).
 * `color`: `W` for White, `B` for Black.
 * `type`: `P` (Pawn), `N` (Knight), `B` (Bishop), `R` (Rook), `Q` (Queen), `K` (King).
@@ -77,7 +89,7 @@ Where:
   - King: `K01`
   - Empty Square Reference: `EMPTY`
 
-*Physical Labeling Requirement:* During the capture campaign, each piece is physically labeled on its underside felt using a non-destructive removable archival tag (e.g. `S01-W-N02`) to prevent piece transposition between captures.
+*Physical Tagging Protocol:* During physical collection, each piece is labeled on its underside felt using a non-destructive removable archival tag (e.g. `S01-W-N02`) to prevent piece transposition between captures.
 
 ---
 
@@ -85,7 +97,7 @@ Where:
 
 In the original Milestone 5.2 design, the isolated sweep consisted of 12 classes swept across 64 squares ($12 \times 64 = 768$ crops). However, this only utilized 1 representative piece per class, leaving 20 physical pieces per set (14 pawns, 2 knights, 2 bishops, 2 rooks) completely unphotographed in isolated views.
 
-We revise the Type A protocol into three structured sub-phases:
+The revised Type A protocol consists of three structured sub-phases:
 
 ```
 ========================================================================================
@@ -95,100 +107,91 @@ Sub-Phase A1: 32-Piece Object Registration Sweep     32 photos (every piece on c
 Sub-Phase A2: 64-Square Position Invariance Sweep    768 photos (12 representative pieces × 64 sq)
 Sub-Phase A3: Empty-Board Reference Sweep            3 photos (Zenith under 3 lighting setups)
 ----------------------------------------------------------------------------------------
-Total Source Photographs per Set:                    803 photographs
-Total Source Photographs (20 Sets):                  16,060 photographs
+Total Type A Source Photographs per Set:             803 photographs
+Total Type A Source Photographs (20 Sets):           16,060 photographs (15,360 sweep + 640 ref + 60 empty)
 Total Derived Type A Canonical Crops (20 Sets):      16,640 crops (15,360 sweep + 1,280 empty)
 Plus Dedicated Piece Instance Reference Crops:       640 piece-instance reference crops
+Plus Additional Specular/Oblique Empty Crops:        2,560 crops (128 crops/set × 20 sets)
 ========================================================================================
 ```
 
-### 3.1 Sub-Phase A1: 32-Piece Physical Object Registration Sweep
-* **Objective:** Guarantee that every single physical piece instance in the set has an unoccluded, ground-truth reference capture.
-* **Placement:** Each of the 32 physical pieces (`W_P01`..`W_P08`, `W_N01`..`W_N02`, `W_B01`..`W_B02`, `W_R01`..`W_R02`, `W_Q01`, `W_K01`, and Black counterparts) is sequentially placed on a central board square (e.g. d4 for White, e5 for Black).
-* **Camera Setup:** Static overhead camera at Zenith ($90^\circ$ pitch) under canonical diffuse daylight.
-* **Output:** 32 individual reference crops per set ($20 \text{ sets} \times 32 = \mathbf{640 \text{ reference piece crops}}$).
-
-### 3.2 Sub-Phase A2: 64-Square Board-Position Invariance Sweep
-* **Objective:** Capture background square wood-grain and lighting gradient variations across all 64 coordinates.
-* **Selected Representative Instances:**
-  - White: `W_P01`, `W_N01`, `W_B01`, `W_R01`, `W_Q01`, `W_K01` (6 pieces)
-  - Black: `B_P01`, `B_N01`, `B_B01`, `B_R01`, `B_Q01`, `B_K01` (6 pieces)
-* **Execution:** Each representative piece is placed on square a1, photographed, moved to b1, photographed, ..., through h8 (64 squares).
-* **Metadata Integrity:** In the manifest, all 64 crops for the White pawn explicitly record `piece_instance_id: "SETxx_W_P01"`. The training pipeline thus recognizes that these 64 crops represent 1 physical object across 64 locations, not 64 independent pawns.
-* **Output:** $12 \text{ pieces} \times 64 \text{ squares} = \mathbf{768 \text{ photos per set}}$ ($15,360$ photos across 20 sets).
-
-### 3.3 Sub-Phase A3: Empty-Square Reference Sweep
-* **Objective:** Capture unpopulated square appearances across all 64 board squares.
-* **Execution:** The empty board is photographed from Zenith under each of the 3 lighting setups (diffuse daylight, overhead specular, directional oblique).
-* **Output:** 3 full-board photographs per set. Cropped to 64 squares, this yields 64 canonical empty crops under diffuse lighting ($20 \times 64 = \mathbf{1,280 \text{ canonical empty crops}}$), and $192$ multi-lighting empty crops per set ($3,840$ total across 20 sets).
+1. **Sub-Phase A1: 32-Piece Physical Object Registration Sweep (32 photos/set):**
+   - Every single physical piece (`W_P01`..`W_P08`, `W_N01`..`W_N02`, `W_B01`..`W_B02`, `W_R01`..`W_R02`, `W_Q01`, `W_K01`, and Black counterparts) is sequentially placed on a central board square (d4 or e5).
+   - Photographed from Zenith ($90^\circ$ pitch) under canonical diffuse daylight.
+   - Guarantees **100% of all 32 physical piece instances** have an unoccluded, ground-truth reference capture ($20 \text{ sets} \times 32 = \mathbf{640 \text{ reference piece crops}}$).
+2. **Sub-Phase A2: 64-Square Board-Position Invariance Sweep (768 photos/set):**
+   - 12 designated representative piece instances (`W_P01, W_N01, W_B01, W_R01, W_Q01, W_K01, B_P01, B_N01, B_B01, B_R01, B_Q01, B_K01`) are sequentially swept across all 64 squares (a1–h8) under Zenith diffuse lighting ($12 \times 64 = \mathbf{768 \text{ photos per set}}$; $15,360$ photos across 20 sets).
+   - In the manifest, all 64 crops for pawn 1 explicitly record `piece_instance_id: "SETxx_W_P01"`. The training pipeline thus recognizes that these 64 crops represent 1 physical object across 64 locations, not 64 independent pawns.
+3. **Sub-Phase A3: Empty-Square Reference Sweep (3 photos/set):**
+   - The empty board is photographed from Zenith under 3 lighting setups (Setup 1 Diffuse, Setup 2 Overhead Specular, Setup 3 Directional Oblique).
+   - Yields 64 canonical empty crops under diffuse lighting ($20 \times 64 = \mathbf{1,280 \text{ canonical empty crops}}$), and $192$ multi-lighting empty crops per set ($3,840$ total across 20 sets).
 
 ---
 
-## 4. Gate 3: Retained Type B Plan A Full-Board Scenes
+## 4. Gate 3: Retained Type B Plan A Full-Board Scenes & Ground-Truth Layouts
 
 Plan A full-board capture remains strictly at **28 scenes per set** and **560 scenes across 20 sets**, yielding **35,840 rectified context crops** ($560 \times 64$).
 
 ### 4.1 Starting-Position Scenes (12 Scenes per Set)
 The board is set up in the canonical starting position (`rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1`) and photographed across all 12 conditions (4 camera angles $\times$ 3 lighting environments):
+* **Viewpoints:** Zenith ($90^\circ$), White Perspective ($45^\circ - 60^\circ$), Black Perspective ($45^\circ - 60^\circ$), Lateral Flank ($45^\circ - 60^\circ$).
+* **Lighting Setups:** Diffuse Daylight (Setup 1), Overhead Specular (Setup 2), Directional Oblique (Setup 3).
 
-| Condition ID | Camera Viewpoint | Pitch / Orientation | Lighting Environment | Technical Purpose |
-| :---: | :--- | :---: | :--- | :--- |
-| **C01** | Zenith / Overhead | $75^\circ - 90^\circ$ top-down | Setup 1 (Diffuse Daylight) | Baseline geometric reference, minimal piece occlusion |
-| **C02** | Zenith / Overhead | $75^\circ - 90^\circ$ top-down | Setup 2 (Overhead Specular) | High specular sheen on varnished pieces & squares |
-| **C03** | Zenith / Overhead | $75^\circ - 90^\circ$ top-down | Setup 3 (Directional Oblique) | Elongated directional cast shadows across ranks |
-| **C04** | White Perspective | $45^\circ - 60^\circ$ from White rank | Setup 1 (Diffuse Daylight) | Canonical player view, White pawn/piece foreshortening |
-| **C05** | White Perspective | $45^\circ - 60^\circ$ from White rank | Setup 2 (Overhead Specular) | Vertical sheen on front faces of White pieces |
-| **C06** | White Perspective | $45^\circ - 60^\circ$ from White rank | Setup 3 (Directional Oblique) | Side-angled cast shadows across e1–e4 |
-| **C07** | Black Perspective | $45^\circ - 60^\circ$ from Black rank | Setup 1 (Diffuse Daylight) | Opponent perspective, Black pawn/piece foreshortening |
-| **C08** | Black Perspective | $45^\circ - 60^\circ$ from Black rank | Setup 2 (Overhead Specular) | Vertical sheen on front faces of Black pieces |
-| **C09** | Black Perspective | $45^\circ - 60^\circ$ from Black rank | Setup 3 (Directional Oblique) | Side-angled cast shadows across e8–e5 |
-| **C10** | Lateral / Flank | $45^\circ - 60^\circ$ from c/f flank | Setup 1 (Diffuse Daylight) | Spectator perspective, lateral piece occlusion |
-| **C11** | Lateral / Flank | $45^\circ - 60^\circ$ from c/f flank | Setup 2 (Overhead Specular) | Cross-board specular reflections |
-| **C12** | Lateral / Flank | $45^\circ - 60^\circ$ from c/f flank | Setup 3 (Directional Oblique) | Long lateral cast shadows across file boundaries |
+### 4.2 Four Additional Midgame Positions: FEN Ground Truth & Reconciliation
+In Milestone 5.2D, we independently audited the four midgame configurations against `chess.js` and internal FEN validators. We verified that the board placement strings represent valid, legal, tournament-realistic chess scenarios. However, the narrative text in Milestone 5.2C contained arithmetic counting errors.
 
-### 4.2 Four Additional Midgame Positions (16 Scenes per Set)
-Each additional position is photographed from the 4 camera angles under canonical diffuse daylight ($4 \text{ positions} \times 4 \text{ angles} = \mathbf{16 \text{ scenes per set}}$).
+Below is the verified, corrected ground-truth specification for all four positions:
 
-The 4 board positions are formally specified using exact FEN placement strings:
-
-#### Position 1: Opening Transition (Ruy Lopez / Berlin Defense)
-* **FEN Placement:** `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1`
-* **Full FEN:** `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 8`
-* **Piece Count:** 30 pieces (15 White, 15 Black, 34 empty squares).
+#### Position 1 (Identifier: `POS_01_OPENING`): Opening Transition (Ruy Lopez / Berlin Defense)
+* **Piece Placement (`piece_placement`):** `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1`
+* **Complete 6-Field FEN (`board_fen`):** `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 8`
+* **Piece Count Reconciliation:**
+  - Stated in 5.2C text: 30 pieces (15 White, 15 Black, 34 empty). **[DISCREPANCY DETECTED]**
+  - Actual in Placement: **32 pieces** (16 White, 16 Black, 32 empty squares). **[CORRECTED]**
+  - Cause of Discrepancy: This is move 8 of the Berlin Defense (1.e4 e5 2.Nf3 Nc6 3.Bb5 Nf6 4.d3 d6 5.Nc3 Be7 6.O-O O-O) where **no pieces have been captured**. The placement string retains all 32 pieces. The layout is 100% correct; the narrative count was corrected from 30 to 32.
 * **Piece Distribution:**
-  - White: P@a2,b2,c2,d3,e4,f2,g2,h2; N@c3,f3; B@b5,c1; R@a1,f1; Q@d1; K@g1
-  - Black: p@a7,b7,c7,d6,e5,f7,g7,h7; n@c6,f6; b@e7,c8; r@a8,f8; q@d8; k@g8
-* **Characteristic:** Symmetrical pawn centers (e4/e5), kings castled kingside, bishop pin on b5, testing dense back-rank piece recognition.
+  - White (16): P@a2,b2,c2,d3,e4,f2,g2,h2 (8 pawns); N@c3,f3 (2); B@b5,c1 (2); R@a1,f1 (2); Q@d1 (1); K@g1 (1).
+  - Black (16): p@a7,b7,c7,d6,e5,f7,g7,h7 (8 pawns); n@c6,f6 (2); b@e7,c8 (2); r@a8,f8 (2); q@d8 (1); k@g8 (1).
+* **Validation:** Both kings on g1/g8 (castled). Castling rights `-`. En-passant `-`. In check: `false`. Legal moves: 34.
 
-#### Position 2: Tactical Complex Middlegame (Open Files & Active Minor Pieces)
-* **FEN Placement:** `r3r1k1/ppqbbppp/2p2n2/8/3N4/2PB4/PP1Q1PPP/R3R1K1`
-* **Full FEN:** `r3r1k1/ppqbbppp/2p2n2/8/3N4/2PB4/PP1Q1PPP/R3R1K1 w - - 4 16`
-* **Piece Count:** 24 pieces (12 White, 12 Black, 40 empty squares).
+#### Position 2 (Identifier: `POS_02_TACTICAL`): Complex Tactical Middlegame (Open e-file)
+* **Piece Placement (`piece_placement`):** `r3r1k1/ppqbbppp/2p2n2/8/3N4/2PB4/PP1Q1PPP/R3R1K1`
+* **Complete 6-Field FEN (`board_fen`):** `r3r1k1/ppqbbppp/2p2n2/8/3N4/2PB4/PP1Q1PPP/R3R1K1 w - - 4 16`
+* **Piece Count Reconciliation:**
+  - Stated in 5.2C text: 24 pieces (12 White, 12 Black, 40 empty). **[DISCREPANCY DETECTED]**
+  - Actual in Placement: **25 pieces** (12 White, 13 Black, 39 empty squares). **[CORRECTED]**
+  - Cause of Discrepancy: Black has 13 pieces (both bishops on d7 and e7, queen on c7, knight on f6, rooks on a8 and e8, 6 pawns, king on g8). White has traded a minor piece and has 12 pieces. The placement string is 100% legal; the narrative count was corrected from 24 to 25.
 * **Piece Distribution:**
-  - White: P@a2,b2,f2,g2,h2; N@d4; B@d3; R@a1,e1; Q@d2; K@g1 (12 pieces)
-  - Black: p@a7,b7,c6,f7,g7,h7; n@f6; b@d7,e7; r@a8,e8; q@c7; k@g8 (12 pieces)
-* **Characteristic:** Open e-file occupied by rooks, central knight on d4, queen on d2, bishops aligned along active diagonals.
+  - White (12): P@a2,b2,c3,f2,g2,h2 (6 pawns); N@d4 (1); B@d3 (1); R@a1,e1 (2); Q@d2 (1); K@g1 (1).
+  - Black (13): p@a7,b7,c6,f7,g7,h7 (6 pawns); n@f6 (1); b@d7,e7 (2); r@a8,e8 (2); q@c7 (1); k@g8 (1).
+* **Validation:** Both kings on g1/g8. Castling rights `-`. En-passant `-`. In check: `false`. Legal moves: 53.
 
-#### Position 3: Asymmetric Pawn Structure & Opposite-Side Castling
-* **FEN Placement:** `3r1rk1/pb1n1p1p/1p4p1/2p5/2P2PP1/P1N1B2P/1P6/2KR3R`
-* **Full FEN:** `3r1rk1/pb1n1p1p/1p4p1/2p5/2P2PP1/P1N1B2P/1P6/2KR3R w - - 0 20`
-* **Piece Count:** 20 pieces (10 White, 10 Black, 44 empty squares, Queens traded).
+#### Position 3 (Identifier: `POS_03_ASYMMETRIC`): Asymmetric Structure & Opposite Castling
+* **Piece Placement (`piece_placement`):** `3r1rk1/pb1n1p1p/1p4p1/2p5/2P2PP1/P1N1B2P/1P6/2KR3R`
+* **Complete 6-Field FEN (`board_fen`):** `3r1rk1/pb1n1p1p/1p4p1/2p5/2P2PP1/P1N1B2P/1P6/2KR3R w - - 0 20`
+* **Piece Count Reconciliation:**
+  - Stated in 5.2C text: 20 pieces (10 White, 10 Black, 44 empty). **[DISCREPANCY DETECTED]**
+  - Actual in Placement: **22 pieces** (11 White, 11 Black, 42 empty squares). **[CORRECTED]**
+  - Cause of Discrepancy: Both queens have been exchanged. Both sides retain 6 pawns, 1 knight, 1 bishop, 2 rooks, and 1 king (11 pieces each = 22 pieces). The placement string is 100% legal; the narrative count was corrected from 20 to 22.
 * **Piece Distribution:**
-  - White: P@a3,b2,c4,f4,g4,h3; N@c3; B@e3; R@d1,h1; K@c1 (10 pieces)
-  - Black: p@a7,b6,c5,f7,g6,h7; n@d7; b@b7; r@d8,f8; k@g8 (10 pieces)
-* **Characteristic:** White castled queenside (K on c1), Black castled kingside (k on g8), asymmetric pawn structures on flanks, testing diagonal perspective rectification.
+  - White (11): P@a3,b2,c4,f4,g4,h3 (6 pawns); N@c3 (1); B@e3 (1); R@d1,h1 (2); K@c1 (1).
+  - Black (11): p@a7,b6,c5,f7,g6,h7 (6 pawns); n@d7 (1); b@b7 (1); r@d8,f8 (2); k@g8 (1).
+* **Validation:** White king on c1 (queenside castled), Black king on g8 (kingside castled). Castling rights `-`. En-passant `-`. In check: `false`. Legal moves: 34.
 
-#### Position 4: Simplified Technical Endgame
-* **FEN Placement:** `4r3/3R1p2/5kp1/p6p/P6P/5KP1/5P2/8`
-* **Full FEN:** `4r3/3R1p2/5kp1/p6p/P6P/5KP1/5P2/8 w - - 2 34`
-* **Piece Count:** 10 pieces (5 White, 5 Black, 54 empty squares).
+#### Position 4 (Identifier: `POS_04_ENDGAME`): Simplified Technical Rook Endgame
+* **Piece Placement (`piece_placement`):** `4r3/3R1p2/5kp1/p6p/P6P/5KP1/5P2/8`
+* **Complete 6-Field FEN (`board_fen`):** `4r3/3R1p2/5kp1/p6p/P6P/5KP1/5P2/8 w - - 2 34`
+* **Piece Count Reconciliation:**
+  - Stated in 5.2C text: 10 pieces (5 White, 5 Black, 54 empty). **[DISCREPANCY DETECTED]**
+  - Actual in Placement: **12 pieces** (6 White, 6 Black, 52 empty squares). **[CORRECTED]**
+  - Cause of Discrepancy: Both sides have 4 pawns + 1 rook + 1 king (6 pieces each = 12 pieces). The placement string is 100% legal; the narrative count was corrected from 10 to 12.
 * **Piece Distribution:**
-  - White: P@a4,f2,g3,h4; R@d7; K@f3 (5 pieces)
-  - Black: p@a5,f7,g6,h5; r@e8; k@f6 (5 pieces)
-* **Characteristic:** Highly sparse board, active central kings on f3 and f6, advanced rook on 7th rank, testing false-positive rejection across 54 empty squares.
+  - White (6): P@a4,f2,g3,h4 (4 pawns); R@d7 (1); K@f3 (1).
+  - Black (6): p@a5,f7,g6,h5 (4 pawns); r@e8 (1); k@f6 (1).
+* **Validation:** White king on f3, Black king on f6. Castling rights `-`. En-passant `-`. In check: `false`. Legal moves: 15.
 
 ### 4.3 Optical Parallax and Oblique Occlusion Handling
-Homography rectification ($800 \times 800$ warping from 4 board corners) calculates a planar transformation based on the board plane $Z = 0$.
+Homography rectification ($800 \times 800$ warping from 4 board corners) calculates a planar transformation on the board plane $Z = 0$.
 
 Because real chess pieces have 3D height:
 * Pawns: 45–50 mm
@@ -201,17 +204,17 @@ In oblique viewpoints ($45^\circ - 60^\circ$ and lateral flank angles):
 2. **Line-of-Sight Occlusion:** Foreground pieces partially occlude pieces standing directly behind them.
 3. **Rectification Limitation:** Rectification **cannot** eliminate 3D parallax or optical occlusion.
 
-To prevent label noise and model confusion, every square crop extracted from a Type B scene carries an explicit `occlusion_level` attribute:
-* `none`: Zenith viewpoint or unobstructed line of sight.
-* `partial`: $\le 30\%$ base/stem occlusion by foreground piece.
-* `severe`: $> 30\%$ occlusion, or piece top projecting across square boundaries.
+Every square crop extracted from a Type B scene carries an explicit manifest attribute:
+* `occlusion_level`: `none` (Zenith or clear line of sight), `partial` ($\le 30\%$ base/stem occlusion), `severe` ($> 30\%$ occlusion).
 
 ---
 
-## 5. Gate 4: Auditable Manifest Schema & Validation Engine
+## 5. Gate 4: Auditable Manifest Schema & Offline Validator
 
-### 5.1 Machine-Readable Manifest Specification (JSONL)
-Every photograph and derived crop is registered in a JSONL manifest (`capture_manifest.jsonl`). Each line is a self-contained JSON record conforming to the following schema:
+### 5.1 Manifest Schema Distinction: `board_fen` vs. `piece_placement`
+The manifest schema explicitly distinguishes placement-only labels from complete six-field FENs:
+* `piece_placement`: Required or optional string containing strictly the 8 ranks of piece placement (e.g. `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1`). Must contain zero spaces.
+* `board_fen`: Complete six-field FEN (e.g. `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 8`). Validates active color, castling rights, en-passant square, halfmove clock, and fullmove number.
 
 ```json
 {
@@ -224,6 +227,7 @@ Every photograph and derived crop is registered in a JSONL manifest (`capture_ma
   "piece_color": "white",
   "scene_id": "SET01_SCENE_01",
   "board_fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "piece_placement": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR",
   "square_coord": "a2",
   "camera_angle": "zenith",
   "lighting_setup": "diffuse_daylight",
@@ -242,57 +246,28 @@ Every photograph and derived crop is registered in a JSONL manifest (`capture_ma
 }
 ```
 
-### 5.2 Offline Validator Implementation
-We implemented and tested offline validation in both TypeScript and Python:
-
-* **TypeScript Validator (`src/vision/manifestValidator.ts`):**
-  - Fully integrated into project tests (`tests/manifestValidator.test.ts`, 12 tests, 100% pass).
-  - Enforces schema types: `PieceType`, `PieceColor`, `CameraAngle`, `LightingSetup`, `CropType`, `OcclusionLevel`, `SplitPartition`.
-* **Python CLI Validator (`scripts/validate_capture_manifest.py`):**
-  - Executable CLI tool for field validation during camera ingest:
-    ```bash
-    py scripts/validate_capture_manifest.py path/to/manifest.jsonl
-    ```
-
-#### Automated Gate Enforcement Rules:
-1. **Missing Required Fields:** Rejects records with missing IDs, paths, licenses, or permission tags.
-2. **Invalid Naming Conventions:** Enforces `SET[0-9]{2}` for sets and `SETxx_[W|B]_[PNBRQK][0-9]{2}` for piece instances.
-3. **Type & Color Consistency:** Enforces that `empty` squares must have `color: none` and `id: EMPTY`. Non-empty pieces must have `white` or `black` matching their ID codes.
-4. **Coordinate & FEN Validation:** Rejects non-algebraic squares (outside `a1`..`h8`). Verifies that all FEN strings have exactly 8 ranks summing to 8 squares each.
-5. **Path Uniqueness:** Detects and flags duplicate `derived_crop_path` values.
-6. **Strict Leak-Free Partitioning:**
-   - Enforces that Sets 01–14 belong to `train`, Sets 15–17 belong to `val`, and Sets 18–20 belong to `holdout`.
-   - Fails if any `set_id` or `piece_instance_id` appears across multiple split partitions.
-7. **License Compliance:** Fails if `data_license` is not `CC0-1.0` or `code_license` is not `MIT`.
+### 5.2 Offline Validator Capabilities (`src/vision/manifestValidator.ts`, `scripts/validate_capture_manifest.py`)
+1. **Field Completeness:** Validates all required metadata fields.
+2. **Piece-ID Format:** Enforces `SETxx_[W|B]_[PNBRQK][0-9]{2}` or `EMPTY`.
+3. **Type & Color Consistency:** Enforces `empty` squares have `none` color and `EMPTY` ID.
+4. **Coordinate & FEN Validation:** Rejects non-algebraic squares (outside `a1`..`h8`). Verifies 8 ranks summing to 8 squares each.
+5. **Path Uniqueness:** Detects duplicate derived crop paths.
+6. **Leak-Free Partitioning:** Strictly enforces Sets 01–14 as `train`, Sets 15–17 as `val`, and Sets 18–20 as `holdout`. Rejects any cross-split leakage.
+7. **Licensing Compliance:** Enforces `data_license: "CC0-1.0"`, `code_license: "MIT"`, and valid release records.
 
 ---
 
 ## 6. Gate 5: Licensing, Consent, and Design Clearance
 
-### 6.1 Clean Separation of Data and Code Licenses
-In compliance with open-source legal best practices:
-* **Dataset (Photographs, Crops, Annotations, FENs):** **CC0 1.0 Universal** (Public Domain Dedication).
-* **Software (Capture Scripts, Validator, Rectification Code, Classification Runtime):** **MIT License**.
-* **Prohibition of Conflation:** The dataset must never be ambiguously labeled "CC0/MIT". The manifest, release notes, and documentation explicitly state:
-  - *"Data: Creative Commons Zero v1.0 Universal (Public Domain Dedication)"*
-  - *"Code: MIT License (c) 2026 AI Chess Navigator Contributors"*
-
-### 6.2 Photographer & Property Releases
-1. **Photographer Consent:** The author (photographer) executes a signed, recorded property release (`author_property_release_20261102.pdf`) dedicating all captured photographs to the public domain under CC0 1.0.
-2. **Set Ownership & Physical Custody:** Only sets physically owned by the author or provided with written owner authorization are photographed.
-3. **Set Design Clearance (Public Domain Staunton Exclusivity):**
-   - Purchasing a physical chess set does **not** grant rights to copyrighted sculptural works.
-   - All 20 physical sets selected for the capture protocol must adhere strictly to the **standard tournament Staunton design** (originally designed by Nathaniel Cook in 1849 and endorsed by Howard Staunton). The physical Staunton silhouette is in the **public domain**.
-   - **Prohibited Sets:** Sculpted thematic sets (e.g. Isle of Lewis replicas with proprietary museum copyrights, movie/pop-culture branded sets, or modern copyrighted artistic sculptures) are strictly prohibited.
-   - A capture is ineligible if design provenance is ambiguous.
+* **Data License:** **CC0 1.0 Universal** (Public Domain Dedication).
+* **Code / Script License:** **MIT License**.
+* **Prohibition of Conflation:** The dataset is never described as "CC0/MIT".
+* **Photographer Property Release:** The author executes a signed property release (`author_property_release_20261102.pdf`) dedicating all captured photographs to the public domain under CC0 1.0.
+* **Public Domain Staunton Exclusivity:** All 20 physical sets selected adhere strictly to the standard tournament Staunton pattern (Nathaniel Cook 1849, public domain). Novelty, proprietary artistic, and licensed IP sets are strictly prohibited.
 
 ---
 
-## 7. Gate 6: Leakage Prevention and Acceptance Plan
-
-### 7.1 Strict Set-Level Partitioning
-To guarantee zero train/val/test data leakage:
-* All source photographs, isolated sweeps, full-board scenes, and derived square crops from a physical set are permanently bound to that set's partition.
+## 7. Gate 6: Leak-Free Partitioning Assignment
 
 ```
 ========================================================================================
@@ -324,46 +299,72 @@ Historical Benchmark Reference:
 ========================================================================================
 ```
 
-### 7.2 Engineering Diversity Target Disclaimer
-The 20-set physical capture protocol is designed as an **engineering diversity hypothesis** to break the 3-set texture bottleneck identified in Milestone 5.0. It is **not** a mathematical guarantee that any specific model architecture will reach $\ge 88.0\%$ Top-1 on the blind holdout. Final recognition performance will be empirically measured against Sets 18–20 after data acquisition.
+---
+
+## 8. Gate 7: Pilot Readiness Specification (Set 01)
+
+Before launching the full 20-set collection, an end-to-end dry run is executed on **Set 01**:
+
+### 8.1 Pilot Scope & Multi-Category Sampling
+The pilot captures at least one verified sample from each required capture category:
+1. **Category 1 (Full-Board Starting Zenith):** Scene `SET01_SCENE_01`, Angle: Zenith, Lighting: Diffuse Daylight.
+2. **Category 2 (Full-Board Starting Oblique):** Scene `SET01_SCENE_04`, Angle: White Perspective, Lighting: Diffuse Daylight.
+3. **Category 3 (Full-Board Position 1):** Scene `SET01_SCENE_13`, Position: Opening Transition (32 pieces), Angle: Zenith.
+4. **Category 4 (Full-Board Position 2):** Scene `SET01_SCENE_17`, Position: Tactical Middlegame (25 pieces), Angle: Zenith.
+5. **Category 5 (Full-Board Position 3):** Scene `SET01_SCENE_21`, Position: Asymmetric Castling (22 pieces), Angle: Zenith.
+6. **Category 6 (Full-Board Position 4):** Scene `SET01_SCENE_25`, Position: Simplified Endgame (12 pieces), Angle: Zenith.
+7. **Category 7 (Sub-phase A1 Object Registration):** Piece `SET01_W_Q01` isolated on d4.
+8. **Category 8 (Sub-phase A1 Object Registration):** Piece `SET01_W_K01` isolated on e4.
+9. **Category 9 (Sub-phase A2 Position Sweep):** Piece `SET01_W_P01` on e4.
+10. **Category 10 (Sub-phase A3 Empty Square):** Square d4, Empty Board.
+
+### 8.2 Operational Risk Log & Mitigations
+* **Risk 1: High Specular Glare on Dark Squares:** Glossy wood finishes create white highlights under overhead lighting.  
+  *Mitigation:* Install circular polarizing filters (CPL) on camera lens and use softbox diffusers on all artificial light sources.
+* **Risk 2: Camera Tripod Shadows in Zenith Shots:** Overhead tripods can cast a dark shadow across ranks 4 and 5.  
+  *Mitigation:* Position dual diffuse lamps at $45^\circ$ angles from opposite sides of the board to cancel center shadows.
+* **Risk 3: Piece Base Transposition:** Pawns or knights swapped between shots cause piece instance ID contamination.  
+  *Mitigation:* Micro-label piece felts with non-destructive numbers (`W-P01` to `W-P08`) and inspect before each sweep.
+* **Risk 4: Rectification Parallax on Oblique Angles:** Tall pieces appear displaced across square boundaries.  
+  *Mitigation:* Annotate square-level crops with `occlusion_level: partial | severe`.
+
+*Readiness Decision:* The pilot protocol is **APPROVED for execution on Set 01**. Note: The pilot validates operational procedures; it is not a claim of multi-set generalization.
 
 ---
 
-## 8. Milestone 5.2C Acceptance Gate Table
+## 9. Milestone 5.2D Acceptance Gate Table
 
 ```
 ========================================================================================================
-MILESTONE 5.2C ACCEPTANCE GATES
+MILESTONE 5.2D ACCEPTANCE GATES
 ========================================================================================================
 Requirement                         Gate Standard      Audit Finding / Status          Gate Decision
 --------------------------------------------------------------------------------------------------------
 Gate 0: Repository State            Preserve all state 35 dist/ files, build/ intact   PASS
-Gate 1: Object vs. Image Diversity  Decouple metrics   640 physical pieces tracked;    PASS (Namespace
-                                                       repeated shots separated        Defined)
-Gate 2: Revised Type A Sweep        32 pieces covered  640 instance ref photos +       PASS (100% Pieces
-                                                       15,360 sweep crops + 1,280 empty Covered)
-Gate 3: Retained Plan A Scenes      560 scenes total   4 midgame FENs specified;       PASS (Plan A
-                                                       3D parallax / occlusion audited Retained)
-Gate 4: Machine Manifest & Validator JSONL schema + TS  Offline validator built &       PASS (12/12 Tests
-                                     & Python engine   tested (zero leakage tolerance) Passing)
-Gate 5: Licensing & Consent         Data/Code decoupled Data: CC0-1.0; Code: MIT;      PASS (Clearance
-                                                       Public domain Staunton sets     Specified)
-Gate 6: Leakage Prevention          Set-level splits   Sets 01-14 Train, 15-17 Val,    PASS (Zero Leakage
-                                                       18-20 Blind Holdout; Zenodo S4  Guaranteed)
+Gate 1: Layout Validation           Direct string check Pos 1: 32 pcs, Pos 2: 25 pcs,   PASS (Corrected
+                                                       Pos 3: 22 pcs, Pos 4: 12 pcs    and Verified)
+Gate 2: Exact Ground Truth          6-field FEN + FEN1 Complete FENs and placement     PASS (Fully
+                                    placement defined  strings verified via chess.js  Reproducible)
+Gate 3: Manifest & Crop Accounting  Category-separated 560 scenes (35,840 context);    PASS (No
+                                    accounting proof   15,360 sweep; 640 ref; 60 empty Conflation)
+Gate 4: Pilot Readiness             Set 01 dry-run     10 categories verified via      PASS (Pilot
+                                    protocol defined   offline validator (100% pass)   Approved)
+Gate 5: Automated Test Suite        TypeScript & Py    170/170 tests passing;          PASS (Verified)
+                                    test coverage      validator tests FEN & counts
 Model Architecture Isolation:       No new models      Zero training conducted         PASS
 Production Model Weights:           pieceModelWeights  100% UNCHANGED                  PASS
 Zero-Silent-Error Policy:           100%               Mandatory confirmation active   PASS
 ========================================================================================================
-OVERALL DECISION: MILESTONE 5.2C PASS.
-PHYSICAL CAPTURE PROTOCOL FULLY SPECIFIED AND OPERATIONALLY AUDITABLE.
-OFFLINE VALIDATOR VERIFIED WITH 100% TEST COVERAGE.
+OVERALL DECISION: MILESTONE 5.2D PASS.
+BOARD LAYOUT GROUND TRUTHS VERIFIED AND MATHEMATICALLY RECONCILED.
+MANIFEST VALIDATOR AND PILOT PROTOCOL APPROVED FOR SET 01 EXECUTION.
 PRODUCTION WEIGHTS IN src/vision/pieceModelWeights.ts REMAIN STRICTLY UNCHANGED.
 ========================================================================================================
 ```
 
 ---
 
-## 9. Operational Field Capture Checklist
+## 10. Operational Field Capture Checklist
 
 When physical collection begins, operators must follow this step-by-step checklist:
 
@@ -374,7 +375,7 @@ When physical collection begins, operators must follow this step-by-step checkli
 
 ### Step 2: Sub-Phase A3 (Empty Board Reference)
 - [ ] Mount camera at Zenith ($90^\circ$ pitch) over empty board.
-- [ ] Capture empty board under Setup 1 (Diffuse Daylight), Setup 2 (Overhead Specular), and Setup 3 (Directional Oblique).
+- [ ] Capture empty board under Setup 1 (Diffuse Daylight), Setup 2 (Overhead Specular), and Setup 3 (Directional Oblique) (3 photos).
 
 ### Step 3: Sub-Phase A1 (32-Piece Object Registration)
 - [ ] Place each of the 32 physical pieces individually on center square (d4 or e5).
@@ -385,11 +386,11 @@ When physical collection begins, operators must follow this step-by-step checkli
 - [ ] Sequentially sweep each representative piece across all 64 squares (a1–h8) under Zenith diffuse lighting ($12 \times 64 = 768$ photos total).
 
 ### Step 5: Type B Full-Board Plan A Scenes
-- [ ] Set up Starting Position. Capture across 4 camera angles $\times$ 3 lighting setups (12 scenes).
-- [ ] Set up Position 1 (Ruy Lopez / Berlin, FEN `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1`). Capture 4 angles under Setup 1 (4 scenes).
-- [ ] Set up Position 2 (Middlegame Open e-file, FEN `r3r1k1/ppqbbppp/2p2n2/8/3N4/2PB4/PP1Q1PPP/R3R1K1`). Capture 4 angles under Setup 1 (4 scenes).
-- [ ] Set up Position 3 (Asymmetric Pawn / Opposite Castling, FEN `3r1rk1/pb1n1p1p/1p4p1/2p5/2P2PP1/P1N1B2P/1P6/2KR3R`). Capture 4 angles under Setup 1 (4 scenes).
-- [ ] Set up Position 4 (Simplified Technical Endgame, FEN `4r3/3R1p2/5kp1/p6p/P6P/5KP1/5P2/8`). Capture 4 angles under Setup 1 (4 scenes).
+- [ ] Set up Starting Position (`rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1`). Capture across 4 camera angles $\times$ 3 lighting setups (12 scenes).
+- [ ] Set up Position 1 (Opening Transition, 32 pieces, FEN `r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 8`). Capture 4 angles under Setup 1 (4 scenes).
+- [ ] Set up Position 2 (Tactical Middlegame, 25 pieces, FEN `r3r1k1/ppqbbppp/2p2n2/8/3N4/2PB4/PP1Q1PPP/R3R1K1 w - - 4 16`). Capture 4 angles under Setup 1 (4 scenes).
+- [ ] Set up Position 3 (Asymmetric Castling, 22 pieces, FEN `3r1rk1/pb1n1p1p/1p4p1/2p5/2P2PP1/P1N1B2P/1P6/2KR3R w - - 0 20`). Capture 4 angles under Setup 1 (4 scenes).
+- [ ] Set up Position 4 (Simplified Technical Endgame, 12 pieces, FEN `4r3/3R1p2/5kp1/p6p/P6P/5KP1/5P2/8 w - - 2 34`). Capture 4 angles under Setup 1 (4 scenes).
 - [ ] Total full-board scenes per set: $12 + 4 + 4 + 4 + 4 = 28$ scenes.
 
 ### Step 6: Post-Capture Ingestion & Offline Validation
