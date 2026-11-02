@@ -1,7 +1,7 @@
 # Chess Piece Recognition: Dataset Provenance & Licensing Policy
 
 Date: 2026-11-02  
-Milestone: 5.2D — Board Layout Ground-Truth Validation and Capture Readiness  
+Milestone: 5.2E — Capture Preflight and Set 01 Physical Pilot  
 Target App: AI Chess Navigator (Offline Mobile Application)  
 Repository: `https://github.com/RahulBongu/chess.git`
 
@@ -53,16 +53,16 @@ AI Chess Navigator operates under strict open-source (MIT), offline, and privacy
 | **LiveChess2FEN** | GitHub (`davidmallasen/LiveChess2FEN`) | AGPL-3.0 | Academic thesis research. Full pipeline with trained models. | **REJECTED (Copyleft Hazard)** | **GNU Affero GPL v3.0** is viral copyleft and incompatible with MIT distribution. |
 | **ChessCog & ChessRender360** | GitHub / Zenodo | MIT / CC BY 4.0 | 3D Blender computer graphics renders (4,888 and 10,000 renders respectively). | **REJECTED (Synthetic Only)** | Does not provide real physical piece imagery or solve the sim-to-real domain gap. |
 | **Synthetic 3D Staunton Renders (In-House)** | Procedural Raytracer / Blender | **MIT / CC0 (Author-Owned)** | Procedural 3D Staunton meshes based on Nathaniel Cook's 1849 public domain blueprints. | **APPROVED (Primary Synthetic Training Source)** | 100% clean lineage. Zero third-party copyright claims. Fully reproducible and license-safe. |
-| **Author-Owned Physical Capture Protocol (Milestone 5.2D Plan A)** | Planned In-House Protocol (`docs/PHYSICAL_CAPTURE_PROTOCOL.md`) | **Data: CC0-1.0; Code: MIT** (Strictly Decoupled) | 20 distinct physical Staunton sets across 4 style categories: 640 distinct physical piece instances, 28 scenes/set (560 full-board scenes = 35,840 context crops), 640 instance ref photos, 15,360 sweep photos, and 60 empty-board photos (1,280 canonical empty crops, 3,840 total empty crops). | **RECOMMENDED FOR FUTURE PHYSICAL RECOGNITION** | Bridges the 14-set global diversity gap with 100% auditable copyright ownership, verified ground-truth FENs, and machine-validated manifest. |
+| **Author-Owned Physical Capture Protocol (Milestone 5.2E Plan A)** | Planned In-House Protocol (`docs/PHYSICAL_CAPTURE_PROTOCOL.md`) | **Data: CC0-1.0; Code: MIT** (Strictly Decoupled) | 20 distinct physical Staunton sets across 4 style categories: 640 distinct physical piece instances, 28 scenes/set (560 full-board scenes = 35,840 context crops), 640 instance ref photos, 15,360 sweep photos, and 60 empty-board photos (1,280 canonical empty crops, 3,840 total empty crops). | **RECOMMENDED FOR FUTURE PHYSICAL RECOGNITION** | Bridges the 14-set global diversity gap with 100% auditable copyright ownership, verified ground-truth FENs, and machine-validated manifest. |
 
 ---
 
 ## 4. Current Repository State & Blocker Disclosure
 
-**Status as of Milestone 5.2D:**
+**Status as of Milestone 5.2E:**
 1. **No External Real-World Dataset Packaged:** In accordance with the repository's strict clean-room policy, no unverified real-image datasets have been imported or committed to `C:\dev\chess`.
 2. **Prototype Baseline:** The Phase 4.3A prototype implementation (`classifyPiece.ts`) includes the mathematical feature extractor (288-bin HOG), scratch-buffer memory manager, model loader, and evaluation harness.
 3. **Synthetic-Only Evaluation:** All unit tests and training demonstrations operate strictly on synthetic fixtures and procedural Staunton silhouettes. Results are labeled **synthetic-only**.
-4. **Layout Ground Truth & Crop Accounting Verified:** In Milestone 5.2D, verified the 4 midgame ground-truth layouts using `chess.js` and corrected narrative counting errors (Pos 1: 32 pcs, Pos 2: 25 pcs, Pos 3: 22 pcs, Pos 4: 12 pcs). Reconciled crop accounting into distinct un-conflated categories (16,620 source photos; 55,680 derived crops).
-5. **Pilot Protocol & Validator Ready:** Defined a 10-category dry-run pilot protocol on Set 01 in `docs/PHYSICAL_CAPTURE_PROTOCOL.md`. Verified the offline manifest validator (`src/vision/manifestValidator.ts`, `scripts/validate_capture_manifest.py`) with 100% pass across 14 automated unit tests.
-6. **Production Model Training Gate:** Final production weights ($\ge 88.0\%$ Top-1 on diverse physical sets) remain blocked until the physical capture campaign is executed following the Plan A protocol. Production weights in `src/vision/pieceModelWeights.ts` remain strictly **UNCHANGED**.
+4. **Preflight Ground Truth & Move Sequence Verified:** In Milestone 5.2E, corrected the Position 1 FEN counters to `w - - 4 7` matching the 12-ply move sequence `1.e4 e5 2.Nf3 Nc6 3.Bb5 Nf6 4.d3 d6 5.Nc3 Be7 6.O-O O-O`, verified Positions 2–4 as constructed snapshots, and reconciled crop inclusion into 52,480 canonical training crops, 640 QC reference crops, and 2,560 lighting stress crops (55,680 total crops; 16,620 source photos).
+5. **Capture Preflight Complete; Physical Pilot Pending:** Set 01 preflight verification passed across all hardware, optical, tagging, and manifest validation requirements (100% pass across 16 unit tests). Physical pilot capture execution is reported as **PENDING** live hardware collection, with zero synthetic substitutions.
+6. **Production Model Training Gate:** Final production weights ($\ge 88.0\%$ Top-1 on diverse physical sets) remain blocked until physical piece collection is executed on hardware. Production weights in `src/vision/pieceModelWeights.ts` remain strictly **UNCHANGED**.

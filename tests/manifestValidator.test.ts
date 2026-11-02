@@ -220,7 +220,7 @@ describe('offline capture manifest validator [Milestone 5.2D]', () => {
 
   it('6. verifies complete six-field FEN ground truth for all four positions [Gate 2]', () => {
     const fens = [
-      'r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 8',
+      'r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 4 7',
       'r3r1k1/ppqbbppp/2p2n2/8/3N4/2PB4/PP1Q1PPP/R3R1K1 w - - 4 16',
       '3r1rk1/pb1n1p1p/1p4p1/2p5/2P2PP1/P1N1B2P/1P6/2KR3R w - - 0 20',
       '4r3/3R1p2/5kp1/p6p/P6P/5KP1/5P2/8 w - - 2 34',
@@ -365,7 +365,7 @@ describe('offline capture manifest validator [Milestone 5.2D]', () => {
       // Category 3: Full-board Position 1 (Opening Transition, 32 pieces)
       createValidContextRecord({
         scene_id: 'SET01_SCENE_13',
-        board_fen: 'r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 8',
+        board_fen: 'r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 4 7',
         piece_placement: 'r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1',
         derived_crop_path: 'crops/train/SET01/cat3_pos1_e1.png',
       }),
@@ -439,5 +439,68 @@ describe('offline capture manifest validator [Milestone 5.2D]', () => {
     assert.equal(result.summary.cropsByType.full_board_context, 6);
     assert.equal(result.summary.cropsByType.isolated_piece, 3);
     assert.equal(result.summary.cropsByType.empty_square, 1);
+  });
+
+  it('15. verifies that move sequence 1.e4 e5 2.Nf3 Nc6 3.Bb5 Nf6 4.d3 d6 5.Nc3 Be7 6.O-O O-O yields exact FEN w - - 4 7 [Gate 1]', async () => {
+    const { Chess } = await import('chess.js');
+    const chess = new Chess();
+    const moves = ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'Nf6', 'd3', 'd6', 'Nc3', 'Be7', 'O-O', 'O-O'];
+    for (const m of moves) {
+      chess.move(m);
+    }
+    const fen = chess.fen();
+    assert.equal(fen, 'r1bq1rk1/ppp1bppp/2np1n2/1B2p3/4P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 4 7');
+    assert.equal(chess.turn(), 'w');
+    assert.equal(chess.inCheck(), false);
+  });
+
+  it('16. reconciles full dataset crop accounting across all categories and splits [Gate 2 & 3]', () => {
+    // 20 physical sets
+    const numSets = 20;
+
+    // Full-Board Plan A Context Scenes
+    const fullBoardScenesPerSet = 28;
+    const totalFullBoardScenes = numSets * fullBoardScenesPerSet; // 560
+    const contextCrops = totalFullBoardScenes * 64; // 35,840
+
+    // Isolated Sweeps
+    const sweepPhotosPerSet = 12 * 64; // 768
+    const totalSweepPhotos = numSets * sweepPhotosPerSet; // 15,360
+    const sweepCrops = totalSweepPhotos; // 15,360
+
+    // Physical Piece Reference Photos (Object Registration)
+    const pieceRefPhotosPerSet = 32;
+    const totalPieceRefPhotos = numSets * pieceRefPhotosPerSet; // 640
+    const pieceRefCrops = totalPieceRefPhotos; // 640
+
+    // Empty-Board Reference Photos
+    const emptyBoardPhotosPerSet = 3;
+    const totalEmptyBoardPhotos = numSets * emptyBoardPhotosPerSet; // 60
+    const canonicalEmptyCrops = numSets * 64; // 1,280
+    const totalMultiLightingEmptyCrops = numSets * 3 * 64; // 3,840
+    const reservedStressEmptyCrops = totalMultiLightingEmptyCrops - canonicalEmptyCrops; // 2,560
+
+    // Source Photos
+    const totalSourcePhotos = totalFullBoardScenes + totalSweepPhotos + totalPieceRefPhotos + totalEmptyBoardPhotos;
+    assert.equal(totalSourcePhotos, 16620); // 560 + 15,360 + 640 + 60 = 16,620
+
+    // Initial Canonical Training Pool (Context + Sweep + Canonical Empty)
+    const canonicalDatasetPool = contextCrops + sweepCrops + canonicalEmptyCrops;
+    assert.equal(canonicalDatasetPool, 52480); // 35,840 + 15,360 + 1,280 = 52,480
+
+    // Split Distribution of Canonical Pool (70% Train, 15% Val, 15% Holdout)
+    const trainCrops = 14 * (28 * 64 + 768 + 64);
+    const valCrops = 3 * (28 * 64 + 768 + 64);
+    const holdoutCrops = 3 * (28 * 64 + 768 + 64);
+
+    assert.equal(trainCrops, 36736); // 14 sets × 2,624 crops/set
+    assert.equal(valCrops, 7872); // 3 sets × 2,624 crops/set
+    assert.equal(holdoutCrops, 7872); // 3 sets × 2,624 crops/set
+    assert.equal(trainCrops + valCrops + holdoutCrops, 52480);
+
+    // Reserved Non-Initial-Training Crops (QC and Stress Test)
+    assert.equal(pieceRefCrops, 640);
+    assert.equal(reservedStressEmptyCrops, 2560);
+    assert.equal(canonicalDatasetPool + pieceRefCrops + reservedStressEmptyCrops, 55680);
   });
 });
