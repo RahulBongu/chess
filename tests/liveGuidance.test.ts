@@ -4,9 +4,16 @@ import assert from 'node:assert/strict';
 
 import { LiveGuidanceCoordinator } from '../src/vision/liveGuidance.ts';
 import type { Point2D } from '../src/vision/perspectiveOverlay.ts';
+import { algebraicToColRow } from '../src/vision/perspectiveOverlay.ts';
 import type { SquareObservation } from '../src/vision/moveRecognizer.ts';
-import type { ChessSquare } from '../src/chess/ChessGame.ts';
+import { ChessGame, STARTING_FEN, type ChessSquare } from '../src/chess/ChessGame.ts';
 import type { ChessEngine, EngineAnalysisResult } from '../src/chess/engine.ts';
+import {
+  PIECE_CLASS_INDEX,
+  PIECE_CLASSES,
+  observationsFromSquareProbabilities,
+  type PieceClass,
+} from '../src/vision/pieceRecognition.ts';
 
 const PERSPECTIVE_CORNERS: Point2D[] = [
   { x: 100, y: 50 },  // top-left
@@ -55,6 +62,59 @@ function createDummyObservations(): SquareObservation[] {
     }
   }
   return obs;
+}
+
+const PIECE_NAME: Record<string, string> = {
+  p: 'pawn',
+  n: 'knight',
+  b: 'bishop',
+  r: 'rook',
+  q: 'queen',
+  k: 'king',
+};
+
+/** Builds the same 64 x 13 evidence the native RGB classifier returns. */
+function classifiedObservations(fen: string): SquareObservation[] {
+  const game = new ChessGame(fen);
+  const remainder = (1 - 0.94) / (PIECE_CLASSES.length - 1);
+  const probabilities = Array.from({ length: 64 }, () =>
+    new Array<number>(PIECE_CLASSES.length).fill(remainder),
+  );
+  for (let file = 0; file < 8; file += 1) {
+    for (let rank = 1; rank <= 8; rank += 1) {
+      const square = `${'abcdefgh'[file]}${rank}` as ChessSquare;
+      const piece = game.pieceAt(square);
+      const pieceClass: PieceClass = piece
+        ? (`${piece.color === 'w' ? 'white' : 'black'}_${PIECE_NAME[piece.type]}` as PieceClass)
+        : 'empty';
+      const { col, row } = algebraicToColRow(square);
+      probabilities[row * 8 + col][PIECE_CLASS_INDEX[pieceClass]] = 0.94;
+    }
+  }
+  return observationsFromSquareProbabilities(probabilities, 'white_bottom');
+}
+
+/** Same evidence with one square deliberately misclassified in this frame. */
+function classifiedObservationsWithMistake(
+  fen: string,
+  square: ChessSquare,
+  pieceClass: PieceClass,
+): SquareObservation[] {
+  const observations = classifiedObservations(fen);
+  const remainder = 0.1 / (PIECE_CLASSES.length - 1);
+  const probabilities = new Array<number>(PIECE_CLASSES.length).fill(remainder);
+  probabilities[PIECE_CLASS_INDEX[pieceClass]] = 0.9;
+  return observations.map((observation) =>
+    observation.square === square
+      ? { ...observation, occupied: true, color: 'w', classProbabilities: probabilities }
+      : observation,
+  );
+}
+
+const AFTER_E4_FEN = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 test('LiveGuidanceCoordinator produces perspective geometry and instructions', async () => {
@@ -200,4 +260,238 @@ test('LiveGuidanceCoordinator suppresses stale engine analysis from an earlier p
   const model3 = await coordinator.processFrame(PERSPECTIVE_CORNERS, obs, false, 0.9);
   assert.equal(model3.bestMove?.san, 'e5');
   assert.notEqual(model3.bestMove?.san, 'd4');
+});
+
+test('requirePositionEvidence keeps engine and arrows off until a classified position is adopted', async () => {
+  const calls: string[] = [];
+  const engine: ChessEngine = {
+    async analyze(fen: string): Promise<EngineAnalysisResult> {
+      calls.push(fen);
+      return {
+        fen,
+        bestMove: { from: 'e2', to: 'e4', san: 'e4' },
+        score: 35,
+        perspective: 'side-to-move',
+        terminal: 'none',
+        pv: ['e2e4', 'e7e5'],
+        positionsEvaluated: 100,
+        depth: 6,
+        engine: 'chal-2.0.0',
+        nodes: 100,
+      };
+    },
+    stop: () => {},
+  };
+
+  const coordinator = new LiveGuidanceCoordinator({
+    engine,
+    orientation: 'white_bottom',
+    initialTurn: 'w',
+    requirePositionEvidence: true,
+  });
+
+  // Occupancy-only observations must never confirm a position or start the
+  // engine, even while the tracker has stable corners.
+  const dummy = createDummyObservations();
+  for (let frame = 0; frame < 4; frame += 1) {
+    const model = await coordinator.processFrame(PERSPECTIVE_CORNERS, dummy, false, 0.9);
+    assert.equal(model.trackingState, 'tracking');
+    assert.equal(model.positionConfirmed, false);
+    assert.equal(model.bestMove, null);
+    assert.equal(model.evaluationScore, null);
+    assert.equal(model.perspectiveGeometry.arrow, null);
+  }
+  assert.equal(calls.length, 0);
+
+  // Four classified frames fill the averaging window. The first averaged
+  // candidate establishes a streak; the next averaged frame confirms it.
+  const start = classifiedObservations(STARTING_FEN);
+  let model;
+  for (let frame = 0; frame < 4; frame += 1) {
+    model = await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+    assert.equal(model.positionConfirmed, false);
+    assert.equal(model.recognition.adoptionFrames, frame + 1);
+    assert.equal(model.bestMove, null);
+  }
+  assert.equal(model!.recognition.adoptionStreak, 1);
+
+  model = await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  assert.equal(model.positionConfirmed, true);
+  assert.equal(model.recognition.adoptionStreak, 0);
+  assert.equal(model.recognition.adoptionFrames, 0);
+  assert.equal(model.recognition.uncertainSquares.length, 0);
+  assert.equal(model.bestMove, null, 'engine search should still be in flight');
+
+  await sleep(10);
+  model = await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  assert.equal(model.positionConfirmed, true);
+  assert.equal(model.bestMove?.san, 'e4');
+  assert.ok(model.perspectiveGeometry.arrow !== null);
+  assert.equal(calls.length, 1);
+});
+
+test('a user-confirmed position is adopted without classifier evidence', async () => {
+  const engine = new MockEngine();
+  const coordinator = new LiveGuidanceCoordinator({
+    engine,
+    requirePositionEvidence: true,
+    adoptionWindow: 4,
+    adoptionConfirmations: 2,
+  });
+
+  assert.equal(coordinator.adoptUserPosition(STARTING_FEN), true);
+  let model = await coordinator.processFrame(PERSPECTIVE_CORNERS, null, false, 0.9);
+  assert.equal(model.positionConfirmed, true);
+  assert.equal(model.fen, STARTING_FEN);
+  assert.equal(model.recognition.adoptionFrames, 0);
+  assert.equal(model.bestMove, null, 'search should still be in flight');
+
+  await sleep(10);
+  model = await coordinator.processFrame(PERSPECTIVE_CORNERS, null, false, 0.9);
+  assert.equal(model.bestMove?.san, 'e4');
+  assert.equal(model.recognition.reason, null);
+});
+
+test('rejects a FEN that does not round-trip exactly', () => {
+  const coordinator = new LiveGuidanceCoordinator({
+    engine: new MockEngine(),
+    requirePositionEvidence: true,
+  });
+  assert.equal(coordinator.adoptUserPosition('not-a-fen'), false);
+  assert.equal(coordinator.adoptUserPosition('8/8/8/8/8/8/8/8 w - - 0 1'), false);
+});
+
+test('adoption averaging absorbs a one-frame misclassification before confirming', async () => {
+  const coordinator = new LiveGuidanceCoordinator({
+    engine: new MockEngine(),
+    requirePositionEvidence: true,
+    adoptionWindow: 4,
+    adoptionConfirmations: 2,
+  });
+
+  const start = classifiedObservations(STARTING_FEN);
+  const misread = classifiedObservationsWithMistake(STARTING_FEN, 'e4', 'white_pawn');
+
+  // The averaging window contains three correct frames and one misread pawn
+  // on e4. The averaged evidence must still produce the legal start position.
+  await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  await coordinator.processFrame(PERSPECTIVE_CORNERS, misread, false, 0.9);
+  let model = await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  assert.equal(model.positionConfirmed, false);
+  assert.equal(model.recognition.adoptionStreak, 1);
+
+  model = await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  assert.equal(model.positionConfirmed, true, model.recognition.reason ?? '');
+  assert.equal(model.fen, STARTING_FEN);
+});
+
+test('adoption evidence resets on occlusion, orientation, and turn changes', async () => {
+  const coordinator = new LiveGuidanceCoordinator({
+    engine: new MockEngine(),
+    requirePositionEvidence: true,
+    adoptionWindow: 4,
+    adoptionConfirmations: 2,
+  });
+  const start = classifiedObservations(STARTING_FEN);
+
+  await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  let model = await coordinator.processFrame(PERSPECTIVE_CORNERS, start, true, 0.9);
+  assert.equal(model.positionConfirmed, false);
+  assert.equal(model.recognition.adoptionFrames, 0);
+  assert.match(model.instruction, /Hand over board/);
+
+  // Refill the window, then flip orientation: stale evidence must not carry
+  // across, because its algebraic squares change meaning.
+  await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  coordinator.setOrientation('black_bottom');
+  model = await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  assert.equal(model.recognition.adoptionFrames, 1);
+
+  await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  assert.equal(
+    (await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9)).recognition
+      .adoptionFrames,
+    3,
+  );
+  coordinator.setTurn('b');
+  model = await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  assert.equal(model.recognition.adoptionFrames, 1);
+  assert.equal(model.positionConfirmed, false);
+});
+
+test('classified move recognition never revives stale engine analysis', async () => {
+  let resolveFirstSearch: ((result: EngineAnalysisResult) => void) | null = null;
+  const engine: ChessEngine = {
+    analyze(fen: string): Promise<EngineAnalysisResult> {
+      if (fen === STARTING_FEN) {
+        return new Promise<EngineAnalysisResult>((resolve) => {
+          resolveFirstSearch = resolve;
+        });
+      }
+      return Promise.resolve({
+        fen,
+        bestMove: { from: 'e7', to: 'e5', san: 'e5' },
+        score: -20,
+        perspective: 'side-to-move',
+        terminal: 'none',
+        pv: ['e7e5'],
+        positionsEvaluated: 50,
+        depth: 5,
+        engine: 'chal-2.0.0',
+        nodes: 50,
+      });
+    },
+    stop: () => {},
+  };
+
+  const coordinator = new LiveGuidanceCoordinator({
+    engine,
+    initialTurn: 'w',
+    requirePositionEvidence: true,
+  });
+
+  const start = classifiedObservations(STARTING_FEN);
+  for (let frame = 0; frame < 5; frame += 1) {
+    await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  }
+  const pending = await coordinator.processFrame(PERSPECTIVE_CORNERS, start, false, 0.9);
+  assert.equal(pending.positionConfirmed, true);
+  assert.equal(pending.bestMove, null);
+  assert.ok(resolveFirstSearch !== null);
+
+  const afterE4 = classifiedObservations(AFTER_E4_FEN);
+  let model = await coordinator.processFrame(PERSPECTIVE_CORNERS, afterE4, false, 0.9);
+  for (let frame = 0; frame < 2; frame += 1) {
+    model = await coordinator.processFrame(PERSPECTIVE_CORNERS, afterE4, false, 0.9);
+  }
+  assert.equal(model.recognizerStatus, 'move_detected');
+  assert.equal(model.fen, AFTER_E4_FEN);
+
+  await sleep(10);
+  model = await coordinator.processFrame(PERSPECTIVE_CORNERS, afterE4, false, 0.9);
+  assert.equal(model.bestMove?.san, 'e5');
+
+  // The delayed starting-position search resolves after the move was
+  // recognized. It must not replace the analysis for the new position.
+  const resolveStart = resolveFirstSearch as unknown as (
+    result: EngineAnalysisResult,
+  ) => void;
+  resolveStart({
+    fen: STARTING_FEN,
+    bestMove: { from: 'd2', to: 'd4', san: 'd4' },
+    score: 40,
+    perspective: 'side-to-move',
+    terminal: 'none',
+    pv: ['d2d4'],
+    positionsEvaluated: 100,
+    depth: 6,
+    engine: 'chal-2.0.0',
+    nodes: 100,
+  });
+  model = await coordinator.processFrame(PERSPECTIVE_CORNERS, afterE4, false, 0.9);
+  assert.equal(model.bestMove?.san, 'e5');
+  assert.notEqual(model.bestMove?.san, 'd4');
 });

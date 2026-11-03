@@ -39,6 +39,36 @@ import {
   type BoardRecognitionResult,
 } from '@/vision/recognizeBoard';
 import type { BoardViewOrientation, DetectedCorner } from '@/vision/types';
+import { ChessGame, type ChessSquare } from '@/chess/ChessGame';
+import { setPendingLivePosition } from '@/vision/pendingLivePosition';
+
+/** Builds the board editor state from a fully round-trippable FEN. */
+function placementFromFen(fen: string | undefined): {
+  squares: Record<string, ChessPieceSymbol | null>;
+  turn: 'w' | 'b';
+} | null {
+  if (!fen) return null;
+  try {
+    const game = new ChessGame(fen);
+    if (game.fen() !== fen) return null;
+    const squares: Record<string, ChessPieceSymbol | null> = {};
+    const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    for (const file of files) {
+      for (let rank = 1; rank <= 8; rank += 1) {
+        const square = `${file}${rank}`;
+        const piece = game.pieceAt(square as ChessSquare);
+        squares[square] = piece
+          ? ((piece.color === 'w'
+              ? piece.type.toUpperCase()
+              : piece.type) as ChessPieceSymbol)
+          : null;
+      }
+    }
+    return { squares, turn: game.turn() };
+  } catch {
+    return null;
+  }
+}
 
 function getOpenCV(): any | null {
   try {
@@ -90,6 +120,8 @@ export default function BoardReviewScreen() {
     imageWidth?: string;
     imageHeight?: string;
     orientation?: string;
+    fen?: string;
+    returnToLive?: string;
   }>();
 
   const [attachedImageUri, setAttachedImageUri] = useState<string | null>(params.imageUri ?? null);
@@ -127,6 +159,10 @@ export default function BoardReviewScreen() {
 
   // Authoritative 64-square placement state
   const [squares, setSquares] = useState<Record<string, ChessPieceSymbol | null>>(() => {
+    const fromFen = placementFromFen(params.fen);
+    if (fromFen) {
+      return fromFen.squares;
+    }
     const map: Record<string, ChessPieceSymbol | null> = {};
     for (const f of FILES) {
       for (const r of RANKS) {
@@ -252,7 +288,7 @@ export default function BoardReviewScreen() {
   };
 
   // Metadata controls
-  const [turn, setTurn] = useState<'w' | 'b'>('w');
+  const [turn, setTurn] = useState<'w' | 'b'>(() => placementFromFen(params.fen)?.turn ?? 'w');
   const [castlingK, setCastlingK] = useState(false);
   const [castlingQ, setCastlingQ] = useState(false);
   const [castlingSmallK, setCastlingSmallK] = useState(false);
@@ -373,6 +409,14 @@ export default function BoardReviewScreen() {
       pathname: '/study',
       params: { fen: validationResult.fen },
     });
+  };
+
+  const handleUseForLive = () => {
+    if (!validationResult.valid || !validationResult.fen) {
+      return;
+    }
+    setPendingLivePosition(validationResult.fen);
+    router.back();
   };
 
   // Render grid cells in display row/column order
@@ -721,6 +765,18 @@ export default function BoardReviewScreen() {
 
         {/* Handoff to Study Button */}
         <View style={styles.handoffContainer}>
+          {params.returnToLive === '1' ? (
+            <Pressable
+              style={validationResult.valid ? styles.primaryButton : styles.disabledButton}
+              onPress={handleUseForLive}
+              disabled={!validationResult.valid}>
+              <Text style={styles.primaryButtonText}>
+                {validationResult.valid
+                  ? 'Use This Position in Live Camera'
+                  : 'Resolve Errors to Use in Live Camera'}
+              </Text>
+            </Pressable>
+          ) : null}
           <Pressable
             style={validationResult.valid ? styles.primaryButton : styles.disabledButton}
             onPress={handleSendToStudy}
@@ -996,7 +1052,7 @@ const styles = StyleSheet.create({
   validSub: { fontSize: 11, color: '#2F855A', marginTop: 2 },
   warningItem: { fontSize: 11, color: '#C05621' },
   disclaimerText: { fontSize: 10, color: '#829AB1', fontStyle: 'italic', marginTop: 4 },
-  handoffContainer: { width: '100%', marginBottom: 16 },
+  handoffContainer: { width: '100%', marginBottom: 16, gap: 10 },
   primaryButton: {
     backgroundColor: '#0052CC',
     paddingVertical: 12,

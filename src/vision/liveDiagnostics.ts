@@ -57,6 +57,12 @@ export interface LiveDiagCounters {
   squareSamplingOps: number;
   /** Detection frames where sampling was skipped because no corners existed. */
   squareSamplingSkipped: number;
+  /** Frames carrying native 64 x 13 square-model evidence. */
+  classificationFrames: number;
+  /** Frames where native classification was requested but returned no scores. */
+  classificationFailures: number;
+  /** Boards adopted after passing the legal-position evidence gate. */
+  positionAdoptions: number;
   /** Legal moves recognized and applied to the tracked game. */
   movesRecognized: number;
   /** Frames the recognizer reported as uncertain/ambiguous. */
@@ -89,6 +95,7 @@ export interface LiveDiagLatency {
   tracker: StageLatencySummary;
   detection: StageLatencySummary;
   sampling: StageLatencySummary;
+  classifier: StageLatencySummary;
   guidance: StageLatencySummary;
   moveRecognition: StageLatencySummary;
   engine: StageLatencySummary;
@@ -146,6 +153,9 @@ export function createEmptyCounters(): LiveDiagCounters {
     candidatesAccepted: 0,
     squareSamplingOps: 0,
     squareSamplingSkipped: 0,
+    classificationFrames: 0,
+    classificationFailures: 0,
+    positionAdoptions: 0,
     movesRecognized: 0,
     uncertainObservations: 0,
     observationsSkippedUntrusted: 0,
@@ -191,6 +201,7 @@ const STAGE_KEYS: readonly StageKey[] = [
   'tracker',
   'detection',
   'sampling',
+  'classifier',
   'guidance',
   'moveRecognition',
   'engine',
@@ -391,6 +402,7 @@ export function createEmptySnapshot(): LiveDiagSnapshot {
       tracker: summarizeLatency([]),
       detection: summarizeLatency([]),
       sampling: summarizeLatency([]),
+      classifier: summarizeLatency([]),
       guidance: summarizeLatency([]),
       moveRecognition: summarizeLatency([]),
       engine: summarizeLatency([]),

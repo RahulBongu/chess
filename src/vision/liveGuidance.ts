@@ -28,6 +28,13 @@ import {
 } from './perspectiveOverlay.ts';
 import { createDefaultEngine, type EngineSelection } from '../chess/engineSelection.ts';
 import type { ChessEngine, EngineAnalysisResult } from '../chess/engine.ts';
+import {
+  averageSquareObservations,
+  observationsFromFen,
+  recognizePositionFromObservations,
+  suggestPositionFromObservations,
+  summarizeSquareEvidence,
+} from './pieceRecognition.ts';
 
 export type TrackingSource = 'detector' | 'motion' | 'hold' | 'none';
 
@@ -52,6 +59,30 @@ export interface LiveStageTimings {
   totalMs: number;
 }
 
+export interface LiveRecognitionState {
+  /** True only after a legal, stable 13-class position has been adopted. */
+  positionConfirmed: boolean;
+  /** Consecutive frames that produced the same candidate position. */
+  adoptionStreak: number;
+  occupiedSquares: number;
+  averageConfidence: number;
+  uncertainSquares: string[];
+  /** Why the last candidate position was rejected, if it was. */
+  reason: string | null;
+  /** Best current model proposal, even when it has not been adopted yet. */
+  candidateFen: string | null;
+  /** Number of frames that carried 64 x 13 classifier evidence. */
+  classifiedFrames: number;
+  /** Classified frames currently buffered for initial adoption averaging. */
+  adoptionFrames: number;
+  /** Configured averaging window for initial adoption. */
+  adoptionWindow: number;
+  /** Configured consecutive-candidate requirement. */
+  adoptionConfirmations: number;
+  /** Native ONNX inference time for the most recent classified frame. */
+  inferenceMs: number | null;
+}
+
 export interface LiveGuidanceModel {
   trackingState: TrackingState;
   /** Which input produced the current fix, or 'hold'/'none' when degraded. */
@@ -70,6 +101,9 @@ export interface LiveGuidanceModel {
   isEngineAnalyzing: boolean;
   /** Set while a pawn promotion awaits explicit piece confirmation. */
   pendingPromotion: PendingPromotion | null;
+  /** Piece-aware board adoption and classifier telemetry. */
+  positionConfirmed: boolean;
+  recognition: LiveRecognitionState;
   /** Stage timings for this frame (JS pipeline only). */
   stageTimings: LiveStageTimings;
   /** Wall-clock duration of the last accepted engine search, if any. */
@@ -89,6 +123,23 @@ export interface LiveGuidanceOptions {
   orientation?: BoardOrientation;
   engine?: ChessEngine;
   initialFen?: string;
+  initialTurn?: 'w' | 'b';
+  /**
+   * Production live camera sets this true: engine analysis and move
+   * recognition stay disabled until the 13-class model produces a legal,
+   * stable position. Legacy/offline callers that already know the position
+   * can leave it false.
+   */
+  requirePositionEvidence?: boolean;
+  /**
+   * Number of classified frames averaged before the initial position gate
+   * runs. A static board's per-frame noise is largely independent, so
+   * averaging reduces single-frame square errors. Ignored after adoption.
+   * Defaults to 4 when `requirePositionEvidence` is set, 1 otherwise.
+   */
+  adoptionWindow?: number;
+  /** Consecutive averaged candidates required before a position is adopted. */
+  adoptionConfirmations?: number;
 }
 
 export class LiveGuidanceCoordinator {
@@ -105,10 +156,39 @@ export class LiveGuidanceCoordinator {
   private lastEngineLatencyMs: number | null = null;
   private engineResultCount = 0;
 
+  private readonly requirePositionEvidence: boolean;
+  private readonly adoptionWindow: number;
+  private readonly adoptionConfirmations: number;
+  private adoptionFrames: SquareObservation[][] = [];
+  private turnHint: 'w' | 'b';
+  private positionConfirmed: boolean;
+  private adoptionStreak = 0;
+  private adoptionCandidateFen: string | null = null;
+  /** Best-effort placement offered to the assisted editor; never auto-adopted. */
+  private suggestedFen: string | null = null;
+  private recognitionReason: string | null = null;
+  private recognitionSummary = {
+    occupiedSquares: 0,
+    averageConfidence: 0,
+    uncertainSquares: [] as string[],
+  };
+  private classifiedFrames = 0;
+  private lastInferenceMs: number | null = null;
+
   constructor(options: LiveGuidanceOptions = {}) {
     this.orientation = options.orientation ?? 'white_bottom';
     this.tracker = new BoardTracker();
     this.recognizer = new MoveRecognizer({ initialFen: options.initialFen });
+    this.requirePositionEvidence = options.requirePositionEvidence ?? false;
+    this.adoptionWindow = Math.max(
+      1,
+      Math.floor(options.adoptionWindow ?? (this.requirePositionEvidence ? 4 : 1)),
+    );
+    this.adoptionConfirmations = Math.max(1, Math.floor(options.adoptionConfirmations ?? 2));
+    this.turnHint = options.initialTurn ?? 'w';
+    // A caller-supplied FEN is already a confirmed position. An internal
+    // starting-position default is not: the camera must prove the board.
+    this.positionConfirmed = Boolean(options.initialFen);
 
     if (options.engine) {
       this.engine = options.engine;
@@ -124,6 +204,11 @@ export class LiveGuidanceCoordinator {
   }
 
   setOrientation(orientation: BoardOrientation): void {
+    if (orientation !== this.orientation) {
+      // Evidence gathered in the old orientation maps to different algebraic
+      // squares. Never average across an orientation change.
+      this.clearAdoptionEvidence();
+    }
     this.orientation = orientation;
   }
 
@@ -131,11 +216,82 @@ export class LiveGuidanceCoordinator {
     return this.orientation;
   }
 
+  isPositionConfirmed(): boolean {
+    return this.positionConfirmed;
+  }
+
+  /** Records native inference latency without changing board state. */
+  noteClassification(inferenceMs: number): void {
+    if (Number.isFinite(inferenceMs) && inferenceMs >= 0) {
+      this.lastInferenceMs = inferenceMs;
+    }
+  }
+
+  /**
+   * Sets the side to move. Before adoption this is the hint used to build the
+   * candidate FEN. After adoption the placement is preserved and only the
+   * side-to-move field changes, which triggers a fresh engine search.
+   */
+  setTurn(turn: 'w' | 'b'): boolean {
+    this.turnHint = turn;
+    if (!this.positionConfirmed) {
+      this.clearAdoptionEvidence();
+      return true;
+    }
+    const ok = this.recognizer.setTurn(turn);
+    if (ok) {
+      this.currentAnalysis = null;
+      this.analyzedFen = null;
+      this.isAnalyzing = false;
+      this.searchGeneration += 1;
+      this.engine.stop();
+    }
+    return ok;
+  }
+
+  getTurnHint(): 'w' | 'b' {
+    return this.turnHint;
+  }
+
   /**
    * Seeds the board tracker with known corners from assisted calibration.
    */
   seedCorners(corners: Point2D[], nowMs?: number): boolean {
     return this.tracker.seed(corners, nowMs);
+  }
+
+  /**
+   * Adopts a position the user has explicitly confirmed or corrected.
+   *
+   * Trust here is anchored to the user, not to the classifier. The baseline is
+   * synthesised from the FEN so a noisy frame cannot immediately masquerade as
+   * a move, and any in-flight search from the previous position is dropped.
+   */
+  adoptUserPosition(fen: string): boolean {
+    const observations = observationsFromFen(fen);
+    if (!observations) {
+      return false;
+    }
+    // The editor can express an empty board; the live tracker cannot use one.
+    // Reuse the same structural gate as automatic adoption so a user-confirmed
+    // position still has to be a playable chess position (both kings, legal
+    // counts, no pawns on the back rank).
+    const validated = recognizePositionFromObservations(observations, { turn: this.turnHint });
+    if (!validated.ok) {
+      return false;
+    }
+    if (!this.recognizer.adoptPosition(fen)) {
+      return false;
+    }
+    this.positionConfirmed = true;
+    this.clearAdoptionEvidence();
+    this.recognitionReason = null;
+    this.currentAnalysis = null;
+    this.analyzedFen = null;
+    this.isAnalyzing = false;
+    this.searchGeneration += 1;
+    this.engine.stop();
+    return true;
   }
 
   /**
@@ -182,16 +338,110 @@ export class LiveGuidanceCoordinator {
     let recognitionResult: MoveRecognitionResult | null = null;
     const recognizerTrusted = trackingState === 'tracking';
     const recognizerStart = nowMsForTiming();
+    const hasClassEvidence =
+      Boolean(observations) &&
+      observations!.length === 64 &&
+      observations!.every(
+        (observation) =>
+          Array.isArray(observation.classProbabilities) &&
+          observation.classProbabilities!.length === 13,
+      );
+
     if (observations && observations.length === 64 && recognizerTrusted) {
-      recognitionResult = this.recognizer.processFrame(observations, isHandOccluded);
+      if (hasClassEvidence) {
+        this.classifiedFrames += 1;
+
+        if (!this.positionConfirmed) {
+          if (isHandOccluded) {
+            // Occluded squares are systematically darker. Averaging them into
+            // adoption evidence would corrupt the eventual position.
+            this.clearAdoptionEvidence();
+            this.recognitionReason = 'Hand over board. Clear the view to recognize pieces.';
+          } else {
+            this.adoptionFrames.push(observations);
+            if (this.adoptionFrames.length > this.adoptionWindow) {
+              this.adoptionFrames.shift();
+            }
+            const averaged =
+              this.adoptionFrames.length >= this.adoptionWindow
+                ? averageSquareObservations(this.adoptionFrames)
+                : null;
+
+            if (averaged) {
+              this.updateRecognitionSummary(averaged);
+              const candidate = recognizePositionFromObservations(averaged, {
+                turn: this.turnHint,
+              });
+              const suggestion = candidate.ok
+                ? candidate
+                : suggestPositionFromObservations(averaged, { turn: this.turnHint });
+              this.suggestedFen = suggestion.ok ? suggestion.fen : null;
+              if (candidate.ok) {
+                if (this.adoptionCandidateFen === candidate.fen) {
+                  this.adoptionStreak += 1;
+                } else {
+                  this.adoptionCandidateFen = candidate.fen;
+                  this.adoptionStreak = 1;
+                }
+                this.recognitionReason =
+                  `Verifying position (${this.adoptionStreak}/${this.adoptionConfirmations})...`;
+                if (this.adoptionStreak >= this.adoptionConfirmations) {
+                  // Seed the baseline from the accepted FEN, not from the noisy
+                  // frame that produced it. Delta tracking must compare future
+                  // frames against the believed position.
+                  if (this.recognizer.adoptPosition(candidate.fen)) {
+                    this.positionConfirmed = true;
+                    this.clearAdoptionEvidence();
+                    this.recognitionReason = null;
+                    this.currentAnalysis = null;
+                    this.analyzedFen = null;
+                  } else {
+                    this.recognitionReason = 'The candidate position could not be adopted.';
+                  }
+                }
+              } else {
+                this.adoptionStreak = 0;
+                this.adoptionCandidateFen = null;
+                this.recognitionReason = candidate.reason;
+              }
+            } else {
+              this.updateRecognitionSummary(observations);
+              this.recognitionReason =
+                `Collecting board evidence (${this.adoptionFrames.length}/${this.adoptionWindow})...`;
+            }
+          }
+        } else {
+          this.updateRecognitionSummary(observations);
+          recognitionResult = this.recognizer.processFrame(observations, isHandOccluded);
+        }
+      } else if (!this.requirePositionEvidence) {
+        // Legacy/offline path: occupancy observations with a known position.
+        recognitionResult = this.recognizer.processFrame(observations, isHandOccluded);
+        this.positionConfirmed = true;
+      }
+    } else if (
+      !this.positionConfirmed &&
+      (trackingState === 'lost' || trackingState === 'uncalibrated')
+    ) {
+      // Corners are gone; buffered evidence no longer describes a trackable
+      // board, so restart adoption when the board is found again.
+      this.clearAdoptionEvidence();
     }
     const recognizerMs = nowMsForTiming() - recognizerStart;
 
     const currentFen = this.recognizer.getFen();
     const turn = this.recognizer.getTurn();
 
-    // 3. Trigger local engine analysis if position changed (asynchronous with stale result suppression)
-    if (currentFen !== this.analyzedFen && !this.recognizer.getGame().isGameOver()) {
+    // 3. Trigger local engine analysis if the confirmed position changed
+    // (asynchronous with stale result suppression). No analysis is allowed
+    // from the built-in starting FEN or an unverified board.
+    if (
+      this.positionConfirmed &&
+      currentFen !== this.analyzedFen &&
+      !this.recognizer.getGame().isGameOver()
+    ) {
+      // Never show an evaluation or arrow belonging to an earlier position.
+      this.currentAnalysis = null;
       this.analyzedFen = currentFen;
       this.engine.stop();
       this.searchGeneration += 1;
@@ -202,7 +452,11 @@ export class LiveGuidanceCoordinator {
       this.engine
         .analyze(currentFen, { depth: 8, maxTimeMs: 150 })
         .then((result) => {
-          if (currentToken === this.searchGeneration && result.fen === this.recognizer.getFen()) {
+          if (
+            this.positionConfirmed &&
+            currentToken === this.searchGeneration &&
+            result.fen === this.recognizer.getFen()
+          ) {
             this.currentAnalysis = result;
             this.lastEngineLatencyMs = nowMsForTiming() - engineStart;
             this.engineResultCount += 1;
@@ -220,22 +474,29 @@ export class LiveGuidanceCoordinator {
 
     // 4. Construct human instruction text
     let instruction = 'Point camera at the board.';
-    const bestMove = this.currentAnalysis?.bestMove ?? null;
+    const recognitionStatus = this.recognizer.getStatus();
+    const recognitionUsable =
+      this.positionConfirmed &&
+      recognitionStatus !== 'occluded' &&
+      recognitionStatus !== 'uncertain';
+    const bestMove = this.positionConfirmed ? this.currentAnalysis?.bestMove ?? null : null;
 
     if (trackingState === 'lost' || trackingState === 'uncalibrated') {
       instruction = 'Locating board... Keep all 4 corners in view.';
+    } else if (!this.positionConfirmed) {
+      instruction = this.recognitionReason ?? 'Board found. Recognizing all 32 pieces...';
     } else if (trackingState === 'holding') {
       instruction = 'Holding board tracking during movement...';
-    } else if (this.recognizer.getStatus() === 'occluded') {
+    } else if (recognitionStatus === 'occluded') {
       instruction = 'Hand over board. Complete move and clear hand.';
-    } else if (this.recognizer.getStatus() === 'uncertain') {
+    } else if (recognitionStatus === 'uncertain') {
       instruction = 'Unrecognized change. Tap Review to verify.';
     } else if (this.recognizer.getGame().isGameOver()) {
       instruction = this.recognizer.getGame().isCheckmate() ? 'Checkmate!' : 'Game drawn.';
     } else if (bestMove) {
       const pieceName = this.getPieceNameAtSquare(bestMove.from);
       instruction = `Suggested: Move ${pieceName} from ${bestMove.from} to ${bestMove.to} (${bestMove.san})`;
-    } else if (this.recognizer.getStatus() === 'stabilizing') {
+    } else if (recognitionStatus === 'stabilizing') {
       instruction = 'Waiting for board to settle...';
     } else {
       instruction = `${turn === 'w' ? 'White' : 'Black'} to move.`;
@@ -243,15 +504,17 @@ export class LiveGuidanceCoordinator {
 
     // 5. Compute perspective geometry if corners are available.
     // Confident overlays (source/destination/arrow) render only while the
-    // fix is fresh (state === 'tracking'). While holding, the board boundary
-    // and grid render but the move arrow and square highlights are
-    // suppressed so a stale fix can never look authoritative.
+    // fix is fresh (state === 'tracking') AND the piece position is
+    // confirmed. While holding or recognizing, the board boundary and grid
+    // render but the move arrow and square highlights are suppressed so a
+    // stale or unverified fix can never look authoritative.
     let sourceQuad: PerspectiveQuad | null = null;
     let destinationQuad: PerspectiveQuad | null = null;
     let arrow: ArrowGeometry | null = null;
     let gridLines: GridLine[] | null = null;
     const geometryStart = nowMsForTiming();
-    const overlayTrusted = stabilizedCorners && trackingState === 'tracking';
+    const overlayTrusted =
+      Boolean(stabilizedCorners) && trackingState === 'tracking' && recognitionUsable;
 
     if (stabilizedCorners) {
       gridLines = computePerspectiveGridLines(stabilizedCorners);
@@ -282,7 +545,7 @@ export class LiveGuidanceCoordinator {
       trackingSource,
       trackingConfidence,
       trackInliers: trackedProposal?.inliers ?? null,
-      recognizerStatus: this.recognizer.getStatus(),
+      recognizerStatus: recognitionStatus,
       turn,
       fen: currentFen,
       instruction,
@@ -294,10 +557,25 @@ export class LiveGuidanceCoordinator {
             promotion: bestMove.promotion,
           }
         : null,
-      evaluationScore: this.currentAnalysis?.score ?? null,
+      evaluationScore: recognitionUsable ? this.currentAnalysis?.score ?? null : null,
       engineName: this.engineSelection.engineName,
       isEngineAnalyzing: this.isAnalyzing,
       pendingPromotion: this.recognizer.getPendingPromotion(),
+      positionConfirmed: this.positionConfirmed,
+      recognition: {
+        positionConfirmed: this.positionConfirmed,
+        adoptionStreak: this.adoptionStreak,
+        occupiedSquares: this.recognitionSummary.occupiedSquares,
+        averageConfidence: this.recognitionSummary.averageConfidence,
+        uncertainSquares: this.recognitionSummary.uncertainSquares,
+        reason: this.recognitionReason,
+        candidateFen: this.suggestedFen,
+        classifiedFrames: this.classifiedFrames,
+        adoptionFrames: this.adoptionFrames.length,
+        adoptionWindow: this.adoptionWindow,
+        adoptionConfirmations: this.adoptionConfirmations,
+        inferenceMs: this.lastInferenceMs,
+      },
       stageTimings: {
         trackerMs,
         recognizerMs,
@@ -337,6 +615,22 @@ export class LiveGuidanceCoordinator {
     }
   }
 
+  private updateRecognitionSummary(observations: SquareObservation[]): void {
+    const summary = summarizeSquareEvidence(observations);
+    this.recognitionSummary = {
+      occupiedSquares: summary.occupiedSquares,
+      averageConfidence: summary.averageConfidence,
+      uncertainSquares: summary.uncertainSquares,
+    };
+  }
+
+  private clearAdoptionEvidence(): void {
+    this.adoptionFrames = [];
+    this.adoptionStreak = 0;
+    this.adoptionCandidateFen = null;
+    this.suggestedFen = null;
+  }
+
   getTracker(): BoardTracker {
     return this.tracker;
   }
@@ -355,6 +649,16 @@ export class LiveGuidanceCoordinator {
     this.lastEngineLatencyMs = null;
     this.engineResultCount = 0;
     this.engine.stop();
+    this.positionConfirmed = Boolean(fen);
+    this.clearAdoptionEvidence();
+    this.recognitionReason = null;
+    this.recognitionSummary = {
+      occupiedSquares: 0,
+      averageConfidence: 0,
+      uncertainSquares: [],
+    };
+    this.classifiedFrames = 0;
+    this.lastInferenceMs = null;
   }
 }
 

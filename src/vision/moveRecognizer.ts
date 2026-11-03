@@ -13,6 +13,14 @@
  */
 
 import { ChessGame, type ChessSquare, type PromotionPiece } from '../chess/ChessGame.ts';
+import {
+  PIECE_CLASSES,
+  boardClassesFromGame,
+  classProbabilitiesToTop,
+  observationsFromFen,
+  reconcileLegalMove,
+  type PieceClass,
+} from './pieceRecognition.ts';
 
 export type RecognizerStatus =
   | 'watching'
@@ -35,6 +43,12 @@ export interface SquareObservation {
    * frame (0..1). Defaults to 1 when not provided by the sampler.
    */
   visibility?: number;
+  /**
+   * 13-class model output for this square, ordered exactly like
+   * `PIECE_CLASSES`. When all 64 observations carry this field the recognizer
+   * uses piece-aware reconciliation instead of occupancy-only deltas.
+   */
+  classProbabilities?: number[];
 }
 
 export interface RecognizedMove {
@@ -88,6 +102,8 @@ export class MoveRecognizer {
   private lastEvaluatedFen: string;
   private pendingPromotion: PendingPromotion | null = null;
   private pendingObservations: SquareObservation[] | null = null;
+  private previousTopClasses: (PieceClass | null)[] | null = null;
+  private positionConfirmed = false;
 
   private readonly requiredStableFrames: number;
   private readonly maxInterFrameFluctuation: number;
@@ -110,6 +126,7 @@ export class MoveRecognizer {
   private initializeBaselineFromGame(): void {
     this.baseline = new Map();
     this.baselineObs = new Map();
+    this.previousTopClasses = null;
     const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
     for (const file of files) {
       for (let rank = 1; rank <= 8; rank += 1) {
@@ -139,10 +156,54 @@ export class MoveRecognizer {
       this.baselineObs.set(obs.square, { ...obs });
     }
     this.previousFrame = new Map(this.baseline);
+    this.previousTopClasses = this.topClassesOf(observations);
     this.stableFrameCount = 0;
     this.pendingPromotion = null;
     this.pendingObservations = null;
     this.status = 'watching';
+    this.positionConfirmed = true;
+  }
+
+  /**
+   * Adopts a legally validated position produced by piece recognition.
+   * Rejects any FEN that chess.js does not round-trip exactly.
+   */
+  adoptPosition(fen: string, observations?: SquareObservation[]): boolean {
+    try {
+      const game = new ChessGame(fen);
+      if (game.fen() !== fen) return false;
+      const baseline =
+        observations && observations.length === 64
+          ? observations
+          : observationsFromFen(fen);
+      if (!baseline || baseline.length !== 64) return false;
+      this.game = game;
+      this.lastEvaluatedFen = fen;
+      this.lastMove = null;
+      this.setBaseline(baseline);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  isPositionConfirmed(): boolean {
+    return this.positionConfirmed;
+  }
+
+  private topClassesOf(observations: SquareObservation[]): (PieceClass | null)[] | null {
+    if (observations.length !== 64) return null;
+    const classes: (PieceClass | null)[] = new Array(64).fill(null);
+    for (const observation of observations) {
+      if (!observation.classProbabilities) return null;
+      const top = classProbabilitiesToTop(observation.classProbabilities);
+      if (!top) return null;
+      const file = observation.square.charCodeAt(0) - 97;
+      const rank = Number(observation.square[1]);
+      if (file < 0 || file > 7 || rank < 1 || rank > 8) return null;
+      classes[(8 - rank) * 8 + file] = PIECE_CLASSES[top.index];
+    }
+    return classes;
   }
 
   /**
@@ -176,6 +237,16 @@ export class MoveRecognizer {
         message: `Incomplete square observations: expected 64, got ${observations.length}`,
         stableFrames: this.stableFrameCount,
       };
+    }
+
+    if (
+      observations.every(
+        (observation) =>
+          Array.isArray(observation.classProbabilities) &&
+          observation.classProbabilities.length === PIECE_CLASSES.length,
+      )
+    ) {
+      return this.processClassifiedFrame(observations, isHandOccluded);
     }
 
     const currentMap = new Map<ChessSquare, boolean>();
@@ -531,6 +602,259 @@ export class MoveRecognizer {
   }
 
   /**
+   * Piece-aware path. A move is accepted only when the classified board
+   * differs from the confirmed position on squares that exactly match one
+   * legal move, with enough probability margin to exclude the runner-up.
+   */
+  private processClassifiedFrame(
+    observations: SquareObservation[],
+    isHandOccluded: boolean,
+  ): MoveRecognitionResult {
+    const currentFen = this.game.fen();
+    const turn = this.game.turn();
+
+    if (!this.positionConfirmed) {
+      return {
+        status: 'watching',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: 'Waiting for a legal, confident board position.',
+        stableFrames: this.stableFrameCount,
+      };
+    }
+
+    if (isHandOccluded) {
+      this.status = 'occluded';
+      this.stableFrameCount = 0;
+      this.previousTopClasses = this.topClassesOf(observations);
+      return {
+        status: 'occluded',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: 'Hand or occlusion over board. Pausing move detection...',
+        stableFrames: 0,
+      };
+    }
+
+    const currentTop = this.topClassesOf(observations);
+    if (!currentTop) {
+      this.status = 'uncertain';
+      return {
+        status: 'uncertain',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: 'Class probabilities are incomplete; keeping confirmed position.',
+        stableFrames: this.stableFrameCount,
+      };
+    }
+
+    if (this.previousTopClasses) {
+      let changes = 0;
+      for (let index = 0; index < 64; index += 1) {
+        if (currentTop[index] !== this.previousTopClasses[index]) changes += 1;
+      }
+      if (changes > 0) {
+        this.stableFrameCount = 0;
+      }
+      // A single legal move can change at most four squares. More than that
+      // between frames is a hand, a shadow, or a camera jump, not a move.
+      if (changes > 4) {
+        this.previousTopClasses = currentTop;
+        this.status = 'occluded';
+        return {
+          status: 'occluded',
+          move: null,
+          fen: currentFen,
+          turn,
+          message: `Board changing rapidly (${changes} squares); pausing.`,
+          stableFrames: 0,
+        };
+      }
+    }
+    this.previousTopClasses = currentTop;
+    this.stableFrameCount += 1;
+
+    const expected = boardClassesFromGame(this.game);
+    const differences: {
+      square: ChessSquare;
+      expected: PieceClass;
+      observed: PieceClass | null;
+      confidence: number;
+    }[] = [];
+    for (const observation of observations) {
+      const file = observation.square.charCodeAt(0) - 97;
+      const rank = Number(observation.square[1]);
+      const boardIndex = (8 - rank) * 8 + file;
+      const top = observation.classProbabilities
+        ? classProbabilitiesToTop(observation.classProbabilities)
+        : null;
+      const observed = top ? PIECE_CLASSES[top.index] : null;
+      if (observed !== expected[boardIndex]) {
+        differences.push({
+          square: observation.square,
+          expected: expected[boardIndex],
+          observed,
+          confidence: top?.probability ?? 0,
+        });
+      }
+    }
+
+    if (differences.length === 0) {
+      this.status = 'watching';
+      return {
+        status: 'watching',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: 'Board steady. Waiting for move.',
+        stableFrames: this.stableFrameCount,
+      };
+    }
+
+    if (differences.length > 4) {
+      this.stableFrameCount = 0;
+      this.status = 'uncertain';
+      return {
+        status: 'uncertain',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: `${differences.length} squares conflict with the confirmed position; keeping it.`,
+        stableFrames: 0,
+      };
+    }
+
+    if (this.stableFrameCount < this.requiredStableFrames) {
+      this.status = 'stabilizing';
+      return {
+        status: 'stabilizing',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: `Board stabilizing (${this.stableFrameCount}/${this.requiredStableFrames})...`,
+        stableFrames: this.stableFrameCount,
+      };
+    }
+
+    const reconciliation = reconcileLegalMove(this.game, observations);
+    if (reconciliation.reason === 'promotion' && reconciliation.best) {
+      this.pendingPromotion = {
+        from: reconciliation.best.move.from,
+        to: reconciliation.best.move.to,
+        candidates: ['q', 'r', 'b', 'n'],
+      };
+      this.pendingObservations = observations;
+      this.status = 'uncertain';
+      return {
+        status: 'uncertain',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: `Pawn promotion detected at ${reconciliation.best.move.to}. Please confirm piece (Queen, Rook, Bishop, Knight).`,
+        stableFrames: this.stableFrameCount,
+        pendingPromotion: this.pendingPromotion,
+      };
+    }
+
+    if (!reconciliation.valid || !reconciliation.best) {
+      this.status = 'uncertain';
+      return {
+        status: 'uncertain',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: reconciliation.reason ?? 'No legal move matches the observed board.',
+        stableFrames: this.stableFrameCount,
+      };
+    }
+
+    const best = reconciliation.best;
+    const changed = new Set(best.changedSquares);
+    const unexplained = differences.filter(
+      (difference) => !changed.has(difference.square) && difference.confidence >= 0.62,
+    );
+    if (unexplained.length > 0) {
+      this.status = 'uncertain';
+      return {
+        status: 'uncertain',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: `Confident changes outside ${best.move.san}: ${unexplained
+          .map((difference) => difference.square)
+          .join(', ')}.`,
+        stableFrames: this.stableFrameCount,
+        unmatchedDeltas: {
+          emptied: [],
+          filled: unexplained.map((difference) => difference.square),
+          captured: [],
+        },
+      };
+    }
+
+    // The scored move may have come from an ep-augmented FEN. Apply it from
+    // that exact source so an inferred en-passant capture is not lost.
+    if (best.sourceFen !== this.game.fen()) {
+      try {
+        const source = new ChessGame(best.sourceFen);
+        if (source.fen() !== best.sourceFen) {
+          throw new Error('Non-canonical source FEN.');
+        }
+        this.game = source;
+      } catch {
+        this.status = 'uncertain';
+        return {
+          status: 'uncertain',
+          move: null,
+          fen: currentFen,
+          turn,
+          message: `Legal reconciliation proposed ${best.move.san}, but its source position was rejected.`,
+          stableFrames: this.stableFrameCount,
+        };
+      }
+    }
+
+    const executed = this.game.tryMove({
+      from: best.move.from,
+      to: best.move.to,
+      promotion: best.move.promotion,
+    });
+    if (!executed) {
+      this.status = 'uncertain';
+      return {
+        status: 'uncertain',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: `Legal reconciliation proposed ${best.move.san}, but the move could not be applied.`,
+        stableFrames: this.stableFrameCount,
+      };
+    }
+
+    const nextFen = this.game.fen();
+    this.lastMove = {
+      from: best.move.from,
+      to: best.move.to,
+      san: executed.san,
+      promotion: executed.promotion as PromotionPiece | undefined,
+    };
+    this.lastEvaluatedFen = nextFen;
+    this.setBaseline(observations);
+    this.status = this.game.isGameOver() ? 'game_over' : 'move_detected';
+    return {
+      status: this.status,
+      move: this.lastMove,
+      fen: nextFen,
+      turn: this.game.turn(),
+      message: `Move recognized: ${executed.san}`,
+      stableFrames: this.stableFrameCount,
+    };
+  }
+
+  /**
    * Confirms a pending pawn promotion with an explicit piece selection ('q' | 'r' | 'b' | 'n').
    */
   confirmPromotion(piece: PromotionPiece): boolean {
@@ -609,6 +933,26 @@ export class MoveRecognizer {
     return this.game.turn();
   }
 
+  /** Changes side to move without discarding the confirmed placement. */
+  setTurn(turn: 'w' | 'b'): boolean {
+    const parts = this.game.fen().split(' ');
+    if (parts.length < 2 || parts[1] === turn) return true;
+    parts[1] = turn;
+    const fen = parts.join(' ');
+    try {
+      const game = new ChessGame(fen);
+      if (game.fen() !== fen) return false;
+      this.game = game;
+      this.lastEvaluatedFen = fen;
+      this.stableFrameCount = 0;
+      this.previousTopClasses = null;
+      this.status = this.game.isGameOver() ? 'game_over' : 'watching';
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   getStatus(): RecognizerStatus {
     return this.status;
   }
@@ -624,8 +968,10 @@ export class MoveRecognizer {
     this.lastEvaluatedFen = this.game.fen();
     this.stableFrameCount = 0;
     this.previousFrame = null;
+    this.previousTopClasses = null;
     this.pendingPromotion = null;
     this.pendingObservations = null;
+    this.positionConfirmed = Boolean(fen);
     this.initializeBaselineFromGame();
   }
 }

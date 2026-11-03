@@ -299,8 +299,37 @@ export function combineDetectionConfidence(
   return confidenceFromScore(boundaryScore) * confidenceFromScore(pattern.score);
 }
 
-export function insetCorners(corners: DetectedCorner[], scale: number): DetectedCorner[] {
-  if (corners.length !== 4 || !Number.isFinite(scale) || scale <= 0) {
+/**
+ * Chooses the quadrilateral that the square grid and overlay should use.
+ *
+ * A contour can wrap a board's physical frame, a page margin, or a screen
+ * bezel. The 8x8 pattern is then only valid after insetting the candidate.
+ * When that happens, returning the outer contour would shift the projected
+ * grid by the border width. Use the measured inset region in that case; when
+ * the full contour itself contains a valid chessboard pattern, keep the outer
+ * corners so a normal borderless board is not shrunk.
+ */
+export function selectGridCorners(
+  outer: DetectedCorner[],
+  inset: DetectedCorner[],
+  options: {
+    fullScalePatternValid: boolean;
+    bestPatternValid: boolean;
+    samplingScale: number;
+  },
+): DetectedCorner[] {
+  if (
+    options.bestPatternValid &&
+    !options.fullScalePatternValid &&
+    options.samplingScale !== 1 &&
+    inset.length === 4
+  ) {
+    return inset.map((point) => ({ ...point }));
+  }
+  return outer.map((point) => ({ ...point }));
+}
+
+export function insetCorners(corners: DetectedCorner[], scale: number): DetectedCorner[] {  if (corners.length !== 4 || !Number.isFinite(scale) || scale <= 0) {
     return corners.map((point) => ({ ...point }));
   }
 

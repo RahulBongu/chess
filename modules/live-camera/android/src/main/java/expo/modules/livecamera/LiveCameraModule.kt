@@ -36,7 +36,7 @@ class LiveCameraModule : Module() {
       }
 
       OnViewDestroys { view: LiveCameraView ->
-        view.stopCamera()
+        view.releaseResources()
       }
 
       AsyncFunction("releaseFrame") { view: LiveCameraView ->
@@ -45,6 +45,18 @@ class LiveCameraModule : Module() {
 
       AsyncFunction("releaseTrackingFrame") { view: LiveCameraView ->
         view.releaseTrackingFrame()
+      }
+
+      AsyncFunction("setClassificationCorners") { view: LiveCameraView, corners: List<Double>, requestId: Int ->
+        view.setClassificationCorners(corners, requestId)
+      }
+
+      AsyncFunction("clearClassificationCorners") { view: LiveCameraView ->
+        view.clearClassificationCorners()
+      }
+
+      AsyncFunction("setClassificationEnabled") { view: LiveCameraView, enabled: Boolean ->
+        view.setClassificationEnabled(enabled)
       }
     }
   }

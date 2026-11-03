@@ -27,4 +27,8 @@ dependencies {
   implementation "androidx.camera:camera-lifecycle:${camerax_version}"
   implementation "androidx.camera:camera-view:${camerax_version}"
   implementation "androidx.core:core-ktx:1.18.0"
+
+  // MIT. Local on-device inference only; the model is bundled in this module's
+  // assets and no network permission exists in the application.
+  implementation "com.microsoft.onnxruntime:onnxruntime-android:1.24.3"
 }

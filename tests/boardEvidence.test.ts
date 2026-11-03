@@ -18,6 +18,7 @@ import {
   insetCorners,
   reorderCorners,
   scoreCandidate,
+  selectGridCorners,
 } from '../src/vision/boardDetection.ts';
 import type { DetectedCorner, VisionSize } from '../src/vision/types.ts';
 
@@ -646,4 +647,23 @@ test('a large uniform quadrilateral cannot reach high confidence even with a per
   assert.equal(boundaryScore, 1);
   assert.equal(evidence.valid, false);
   assert.equal(combineDetectionConfidence(boundaryScore, evidence), 0);
+});
+
+test('grid projection uses the measured inset when the outer contour includes a frame', () => {
+  const outer = axisAlignedSquare(100, 100, 400);
+  const inset = insetCorners(outer, 0.88);
+
+  const corrected = selectGridCorners(outer, inset, {
+    fullScalePatternValid: false,
+    bestPatternValid: true,
+    samplingScale: 0.88,
+  });
+  assert.deepEqual(corrected, inset.map((point) => ({ ...point })));
+
+  const preserved = selectGridCorners(outer, inset, {
+    fullScalePatternValid: true,
+    bestPatternValid: true,
+    samplingScale: 0.95,
+  });
+  assert.deepEqual(preserved, outer.map((point) => ({ ...point })));
 });

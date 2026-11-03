@@ -28,6 +28,7 @@ import {
   normalizePoints,
   reorderCorners,
   scoreCandidate,
+  selectGridCorners,
   validateCandidateGeometry,
 } from './boardDetection';
 import type { CandidateDiagnostic } from './types';
@@ -96,6 +97,7 @@ export async function detectBoardFromMat(src: Mat): Promise<BoardDetectionResult
     const seenCandidates = new Set<string>();
     const candidates: {
       corners: { x: number; y: number }[];
+      gridCorners: { x: number; y: number }[];
       boundaryScore: number;
       pattern: PatternEvidence;
       confidence: number;
@@ -205,7 +207,8 @@ export async function detectBoardFromMat(src: Mat): Promise<BoardDetectionResult
         // for calibration.
         let bestSamplingScale = 1;
         let bestSamplingCorners = orderedProcessing;
-        let bestPattern = measureBoardPattern(grayscale, orderedProcessing);
+        const fullScalePattern = measureBoardPattern(grayscale, orderedProcessing);
+        let bestPattern = fullScalePattern;
         let bestConfidence = combineDetectionConfidence(boundaryScore, bestPattern);
 
         for (const samplingScale of PATTERN_SAMPLING_SCALES) {
@@ -231,9 +234,28 @@ export async function detectBoardFromMat(src: Mat): Promise<BoardDetectionResult
           x: point.x / scale,
           y: point.y / scale,
         }));
+        // When the full contour interior is not a plausible board but an inset
+        // region is, the contour most likely includes a physical frame, page
+        // margin, or on-screen bezel. Project the overlay onto the measured
+        // 8x8 area instead of the outer rectangle, otherwise every square and
+        // arrow is shifted toward the frame by roughly the border width.
+        const gridCornersProcessing = selectGridCorners(
+          orderedProcessing,
+          bestSamplingCorners,
+          {
+            fullScalePatternValid: fullScalePattern.valid,
+            bestPatternValid: bestPattern.valid,
+            samplingScale: bestSamplingScale,
+          },
+        );
+        const gridCorners = gridCornersProcessing.map((point) => ({
+          x: point.x / scale,
+          y: point.y / scale,
+        }));
 
         candidates.push({
           corners: clamped,
+          gridCorners,
           boundaryScore,
           pattern: bestPattern,
           confidence,
@@ -283,7 +305,7 @@ export async function detectBoardFromMat(src: Mat): Promise<BoardDetectionResult
       };
     }
 
-    const normalized = normalizePoints(best.corners, originalSize);
+    const normalized = normalizePoints(best.gridCorners, originalSize);
     return {
       success: true,
       imageSize: originalSize,

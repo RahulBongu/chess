@@ -12,6 +12,26 @@ export interface LiveCameraFrameEvent {
   analyzedFrames?: number;
   /** Cumulative frames skipped by the native analyzer (throttle or busy). */
   droppedFrames?: number;
+  /**
+   * 64 x 13 raw model scores (logits), board-view row-major. Present only
+   * when native square classification ran for this frame. Crop pixels never
+   * cross the bridge.
+   */
+  squareScores?: number[];
+  /** Normalized corners used for this frame's square crops. */
+  classificationCorners?: number[];
+  /** Native ONNX inference duration for this frame. */
+  inferenceMs?: number;
+  /** Correlates this frame with the corner update that produced it. */
+  classificationRequestId?: number;
+}
+
+export interface LiveCameraViewHandle {
+  setClassificationCorners(corners: number[], requestId: number): Promise<void>;
+  clearClassificationCorners(): Promise<void>;
+  setClassificationEnabled(enabled: boolean): Promise<void>;
+  releaseFrame(): Promise<void>;
+  releaseTrackingFrame(): Promise<void>;
 }
 
 export interface LiveCameraViewProps {

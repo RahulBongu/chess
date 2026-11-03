@@ -1,7 +1,8 @@
 import { useCameraPermissions } from 'expo-camera';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Modal,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -13,9 +14,10 @@ import {
 
 import { detectBoardFromGrayscaleBuffer } from '@/vision/detectBoard';
 import { validateGrayscaleFrame } from '@/vision/grayscaleFrame';
-import { sampleSquareObservations } from '@/vision/squareSampler';
 import { BoardMotionTracker } from '@/vision/motionTracker';
 import { createFrameToViewTransform } from '@/vision/cameraProjection';
+import { THIRD_PARTY_NOTICES } from '@/constants/third-party-notices';
+import { takePendingLivePosition } from '@/vision/pendingLivePosition';
 import {
   LiveDiagnostics,
   createEmptySnapshot,
@@ -23,13 +25,23 @@ import {
   type LiveDiagSnapshot,
   type StageLatencySummary,
 } from '@/vision/liveDiagnostics';
-import { LiveCameraView } from '../../../modules/live-camera/src';
+import {
+  LiveCameraView,
+  type LiveCameraViewHandle,
+} from '../../../modules/live-camera/src';
 import {
   LiveGuidanceCoordinator,
   type LiveGuidanceModel,
 } from '@/vision/liveGuidance';
 import type { BoardOrientation, Point2D } from '@/vision/perspectiveOverlay';
 import type { SquareObservation } from '@/vision/moveRecognizer';
+import {
+  observationsFromSquareProbabilities,
+  rotateSquareProbabilities,
+  softmaxSquareScores,
+  summarizeSquareEvidence,
+} from '@/vision/pieceRecognition';
+import { reorderCorners } from '@/vision/boardDetection';
 
 function Segment({
   from,
@@ -71,8 +83,13 @@ export default function LiveGameScreen() {
   const [previewReady, setPreviewReady] = useState(false);
   const [analysisReady, setAnalysisReady] = useState(false);
   const [orientation, setOrientation] = useState<BoardOrientation>('white_bottom');
+  const [turnToMove, setTurnToMove] = useState<'w' | 'b'>('w');
   const [guidance, setGuidance] = useState<LiveGuidanceModel | null>(null);
   const [status, setStatus] = useState('Start live camera to track the physical board.');
+  const [calibrating, setCalibrating] = useState(false);
+  const [calibrationPoints, setCalibrationPoints] = useState<Point2D[]>([]);
+  const [manualCalibrated, setManualCalibrated] = useState(false);
+  const [noticesVisible, setNoticesVisible] = useState(false);
   // 5.4F diagnostics: counters update at frame rate in a ref (no React
   // render), and a 2 Hz snapshot drives the HUD.
   const diagnosticsRef = useRef<LiveDiagnostics | null>(null);
@@ -83,11 +100,20 @@ export default function LiveGameScreen() {
 
   const coordinatorRef = useRef<LiveGuidanceCoordinator | null>(null);
   if (!coordinatorRef.current) {
-    coordinatorRef.current = new LiveGuidanceCoordinator({ orientation });
+    coordinatorRef.current = new LiveGuidanceCoordinator({
+      orientation,
+      initialTurn: 'w',
+      requirePositionEvidence: true,
+      adoptionWindow: 4,
+      adoptionConfirmations: 2,
+    });
   }
 
   const busyRef = useRef(false);
-  const cameraRef = useRef<any>(null);
+  const cameraRef = useRef<LiveCameraViewHandle | null>(null);
+  const classificationRequestIdRef = useRef(0);
+  const classificationCornersRef = useRef<number[] | null>(null);
+  const positionConfirmedRef = useRef(false);
   const startupTokenRef = useRef(0);
   const startupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const motionTrackerRef = useRef(new BoardMotionTracker());
@@ -111,6 +137,31 @@ export default function LiveGameScreen() {
   } | null>(null);
   const previousRecognizerStatusRef = useRef<string | null>(null);
   const lastEngineResultCountRef = useRef(0);
+  const manualCalibrationRef = useRef(false);
+  // While the user is reviewing or correcting the position on the board editor,
+  // incoming native frames are dropped. The native pipeline only advances when
+  // a frame is released, so both handlers must keep releasing.
+  const editingPositionRef = useRef(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      editingPositionRef.current = false;
+      const confirmed = takePendingLivePosition();
+      if (!confirmed) {
+        return;
+      }
+      const coordinator = coordinatorRef.current;
+      if (!coordinator) {
+        return;
+      }
+      if (coordinator.adoptUserPosition(confirmed)) {
+        positionConfirmedRef.current = true;
+        setStatus('Position confirmed. Tracking moves from your verified board.');
+      } else {
+        setStatus('That position could not be adopted. Review the pieces and try again.');
+      }
+    }, []),
+  );
 
   useEffect(() => {
     coordinatorRef.current?.setOrientation(orientation);
@@ -153,7 +204,7 @@ export default function LiveGameScreen() {
     }) => {
       const diagnostics = diagnosticsRef.current!;
       // Native only emits the next frame after release, so always release.
-      if (!active) {
+      if (!active || editingPositionRef.current) {
         cameraRef.current?.releaseTrackingFrame?.();
         return;
       }
@@ -218,10 +269,14 @@ export default function LiveGameScreen() {
         rotationDegrees?: number;
         analyzedFrames?: number;
         droppedFrames?: number;
+        squareScores?: number[];
+        classificationCorners?: number[];
+        inferenceMs?: number;
+        classificationRequestId?: number;
       };
     }) => {
       const diagnostics = diagnosticsRef.current!;
-      if (!active) {
+      if (!active || editingPositionRef.current) {
         cameraRef.current?.releaseFrame?.();
         return;
       }
@@ -269,8 +324,9 @@ export default function LiveGameScreen() {
         let detectedCorners: Point2D[] | null = null;
         let confidence = 0;
         const detectionDue =
-          motionTrackerRef.current.needsReseed() ||
-          Date.now() - lastDetectionMsRef.current >= 1500;
+          !manualCalibrationRef.current &&
+          (motionTrackerRef.current.needsReseed() ||
+            Date.now() - lastDetectionMsRef.current >= 1500);
         if (detectionDue) {
           diagnostics.counters.fullDetectionAttempts += 1;
           const detStart = performance.now();
@@ -303,29 +359,76 @@ export default function LiveGameScreen() {
         const coordinator = coordinatorRef.current;
         const now = Date.now();
 
-        // 2. Sample 64-square observations from the freshest fix.
+        // 2. Feed the freshest validated corners to native classification.
+        // The native side crops 64 perspective-correct RGB squares and sends
+        // only 64 x 13 probabilities back with the next frame.
         let observations: SquareObservation[] | null = null;
+        let handOccluded = false;
         if (coordinator) {
           const sampleCorners =
             coordinator.getTracker().getCorners() ??
             detectedCorners ??
             latestTrackingProposalRef.current?.corners?.normalized ??
             null;
-          if (sampleCorners) {
-            const pixelCorners: Point2D[] = sampleCorners.map((pt) => ({
-              x: pt.x * frameWidth,
-              y: pt.y * frameHeight,
-            }));
-            const sampleStart = performance.now();
-            observations = sampleSquareObservations(grayFrame, pixelCorners, orientation);
-            diagnostics.counters.squareSamplingOps += 1;
-            diagnostics.record('sampling', performance.now() - sampleStart);
+          if (sampleCorners && sampleCorners.length === 4) {
+            const normalizedCorners = sampleCorners.flatMap((pt) => [pt.x, pt.y]);
+            if (
+              normalizedCorners.length === 8 &&
+              normalizedCorners.every((value) => Number.isFinite(value))
+            ) {
+              classificationRequestIdRef.current += 1;
+              classificationCornersRef.current = normalizedCorners;
+              const request = cameraRef.current?.setClassificationCorners?.(
+                normalizedCorners,
+                classificationRequestIdRef.current,
+              );
+              if (request && typeof request.catch === 'function') {
+                request.catch(() => {
+                  diagnostics.counters.classificationFailures += 1;
+                });
+              }
+            }
           } else {
             diagnostics.counters.squareSamplingSkipped += 1;
           }
         }
 
-        // 3. Guidance coordinator. Only pass a fresh motion-tracked fix;
+        // 3. Decode the native classifier's board-view scores. The score
+        // vector never contains pixels; RGB crops stay inside the process.
+        const scores = native.squareScores;
+        if (scores && scores.length === 64 * 13) {
+          const probabilities = softmaxSquareScores(scores);
+          if (probabilities) {
+            diagnostics.counters.classificationFrames += 1;
+            if (typeof native.inferenceMs === 'number') {
+              diagnostics.record('classifier', native.inferenceMs);
+              coordinator?.noteClassification(native.inferenceMs);
+            }
+
+            // A still image cannot prove side to move, and a 180-degree
+            // rotation preserves structural legality. The user's White/Black
+            // Bottom toggle is therefore authoritative; never guess here.
+            // First undo the sensor's display rotation so grid rows really are
+            // ranks in the preview the user is looking at.
+            const rotated = rotateSquareProbabilities(
+              probabilities,
+              native.rotationDegrees ?? lastFrameInfoRef.current?.rotationDegrees ?? 0,
+            );
+            if (!rotated) {
+              diagnostics.counters.classificationFailures += 1;
+              return;
+            }
+            observations = observationsFromSquareProbabilities(rotated, orientation);
+            const summary = summarizeSquareEvidence(observations);
+            handOccluded = summary.uncertainSquares.length >= 6;
+          } else {
+            diagnostics.counters.classificationFailures += 1;
+          }
+        } else if (classificationCornersRef.current) {
+          diagnostics.counters.classificationFailures += 1;
+        }
+
+        // 4. Guidance coordinator. Only pass a fresh motion-tracked fix;
         // a stale proposal must never keep an overlay alive.
         if (coordinator) {
           const cached = latestTrackingProposalRef.current;
@@ -343,13 +446,18 @@ export default function LiveGameScreen() {
           const model = await coordinator.processFrame(
             detectedCorners,
             observations,
-            false,
+            handOccluded,
             confidence,
             now,
             trackingProposal,
           );
           diagnostics.record('guidance', performance.now() - guidanceStart);
           diagnostics.record('moveRecognition', model.stageTimings.recognizerMs);
+
+          if (model.positionConfirmed && !positionConfirmedRef.current) {
+            diagnostics.counters.positionAdoptions += 1;
+          }
+          positionConfirmedRef.current = model.positionConfirmed;
 
           if (model.engineResultCount !== lastEngineResultCountRef.current) {
             lastEngineResultCountRef.current = model.engineResultCount;
@@ -374,7 +482,9 @@ export default function LiveGameScreen() {
           previousRecognizerStatusRef.current = model.recognizerStatus;
 
           const overlayTrusted =
-            model.trackingState === 'tracking' && model.perspectiveGeometry.corners !== null;
+            model.trackingState === 'tracking' &&
+            model.positionConfirmed &&
+            model.perspectiveGeometry.corners !== null;
           if (overlayTrusted) {
             diagnostics.counters.trustedOverlayFrames += 1;
             diagnostics.record('overlayModel', performance.now() - handlerStart);
@@ -437,6 +547,19 @@ export default function LiveGameScreen() {
     clearStartupTimeout();
     setActive(true);
     setStatus('Starting rear camera...');
+    coordinatorRef.current?.reset();
+    coordinatorRef.current?.setTurn(turnToMove);
+    diagnosticsRef.current!.counters.classificationFrames = 0;
+    diagnosticsRef.current!.counters.classificationFailures = 0;
+    diagnosticsRef.current!.counters.positionAdoptions = 0;
+    positionConfirmedRef.current = false;
+    manualCalibrationRef.current = false;
+    editingPositionRef.current = false;
+    setManualCalibrated(false);
+    setCalibrating(false);
+    setCalibrationPoints([]);
+    classificationCornersRef.current = null;
+    classificationRequestIdRef.current = 0;
     motionTrackerRef.current.reset();
     lastDetectionMsRef.current = 0;
     lastFrameInfoRef.current = null;
@@ -458,6 +581,17 @@ export default function LiveGameScreen() {
     setActive(false);
     setPreviewReady(false);
     setAnalysisReady(false);
+    editingPositionRef.current = false;
+    const clearCorners = cameraRef.current?.clearClassificationCorners?.();
+    if (clearCorners && typeof clearCorners.catch === 'function') {
+      clearCorners.catch(() => {});
+    }
+    classificationCornersRef.current = null;
+    positionConfirmedRef.current = false;
+    manualCalibrationRef.current = false;
+    setManualCalibrated(false);
+    setCalibrating(false);
+    setCalibrationPoints([]);
     motionTrackerRef.current.reset();
     lastDetectionMsRef.current = 0;
     lastFrameInfoRef.current = null;
@@ -471,7 +605,26 @@ export default function LiveGameScreen() {
   };
 
   const toggleOrientation = () => {
-    setOrientation((prev) => (prev === 'white_bottom' ? 'black_bottom' : 'white_bottom'));
+    const next: BoardOrientation =
+      orientation === 'white_bottom' ? 'black_bottom' : 'white_bottom';
+    setOrientation(next);
+    coordinatorRef.current?.setOrientation(next);
+    // The square-to-algebraic mapping changes, so the previously confirmed
+    // position and any overlay are no longer valid. Re-run recognition.
+    coordinatorRef.current?.reset();
+    positionConfirmedRef.current = false;
+    setCalibrating(false);
+    setCalibrationPoints([]);
+    setStatus('Board orientation changed. Recognizing the position again...');
+  };
+
+  const toggleTurn = () => {
+    const next: 'w' | 'b' = turnToMove === 'w' ? 'b' : 'w';
+    setTurnToMove(next);
+    const ok = coordinatorRef.current?.setTurn(next);
+    if (ok === false) {
+      setStatus('Could not change side to move for this position.');
+    }
   };
 
   const handleGoToReview = () => {
@@ -479,10 +632,118 @@ export default function LiveGameScreen() {
     router.push({
       pathname: '/board-review',
       params: {
-        orientation,
-        fen: guidance?.fen,
+        orientation: orientation === 'white_bottom' ? 'white-bottom' : 'black-bottom',
+        fen: guidance?.positionConfirmed ? guidance.fen : undefined,
       },
     });
+  };
+
+  const handleEditPosition = () => {
+    // Hand the editor the best evidence we have: the confirmed FEN if one
+    // exists, otherwise the current averaged candidate. It never invents a
+    // position; an empty editor is the honest fallback.
+    const candidate = guidance?.positionConfirmed
+      ? guidance.fen
+      : guidance?.recognition.candidateFen ?? undefined;
+    editingPositionRef.current = true;
+    router.push({
+      pathname: '/board-review',
+      params: {
+        orientation: orientation === 'white_bottom' ? 'white-bottom' : 'black-bottom',
+        fen: candidate,
+        returnToLive: '1',
+      },
+    });
+  };
+
+  const handleAssistCorners = () => {
+    if (!active || !lastFrameInfoRef.current) {
+      setStatus('Start the camera before tapping board corners.');
+      return;
+    }
+    setCalibrating((value) => !value);
+    setCalibrationPoints([]);
+    setStatus(
+      calibrating
+        ? 'Corner assistance cancelled.'
+        : 'Tap the four corners of the playing area (where the squares begin), in order: top-left, top-right, bottom-right, bottom-left.',
+    );
+  };
+
+  const handleCalibrationTap = (x: number, y: number) => {
+    if (!calibrating || calibrationPoints.length >= 4) return;
+    const frameInfo = lastFrameInfoRef.current;
+    if (!frameInfo) {
+      setStatus('Camera frame is not ready yet.');
+      return;
+    }
+    const transform = createFrameToViewTransform({
+      frameWidth: frameInfo.width,
+      frameHeight: frameInfo.height,
+      rotationDegrees: frameInfo.rotationDegrees,
+      viewWidth: previewWidth,
+      viewHeight: previewHeight,
+      scaleType: 'FILL_CENTER',
+    });
+    const mapped = transform.unmapView(x, y);
+    if (
+      !Number.isFinite(mapped.u) ||
+      !Number.isFinite(mapped.v) ||
+      mapped.u < 0 ||
+      mapped.u > 1 ||
+      mapped.v < 0 ||
+      mapped.v > 1
+    ) {
+      setStatus('That tap is outside the camera image. Tap the board corner again.');
+      return;
+    }
+    const next = [...calibrationPoints, { x: mapped.u, y: mapped.v }];
+    setCalibrationPoints(next);
+    if (next.length < 4) {
+      const remaining = ['top-right', 'bottom-right', 'bottom-left'][next.length - 1];
+      setStatus(`Corner ${next.length}/4 saved. Next: ${remaining}.`);
+      return;
+    }
+
+    // Camera frames are delivered in sensor orientation. Normalise the
+    // display-order taps back to the detector's sensor-space corner order so
+    // grid rows always mean the same edge of the board.
+    const ordered = reorderCorners(next);
+    const coordinator = coordinatorRef.current;
+    if (!coordinator || !coordinator.seedCorners(ordered)) {
+      setStatus('Those corners do not form a valid quadrilateral. Tap them again.');
+      setCalibrationPoints([]);
+      return;
+    }
+    coordinator.reset();
+    coordinator.setTurn(turnToMove);
+    coordinator.seedCorners(ordered);
+    manualCalibrationRef.current = true;
+    setManualCalibrated(true);
+    setCalibrating(false);
+    setCalibrationPoints([]);
+
+    const seedFrame = latestTrackingFrameRef.current;
+    if (seedFrame && Date.now() - seedFrame.timestamp <= 1500) {
+      motionTrackerRef.current.seed(seedFrame.frame, ordered, Date.now());
+    }
+    lastDetectionMsRef.current = 0;
+    setStatus('Corners locked. Verifying the piece position...');
+  };
+
+  const handleResumeAutoDetect = () => {
+    manualCalibrationRef.current = false;
+    setManualCalibrated(false);
+    setCalibrating(false);
+    setCalibrationPoints([]);
+    motionTrackerRef.current.reset();
+    coordinatorRef.current?.reset();
+    coordinatorRef.current?.setTurn(turnToMove);
+    positionConfirmedRef.current = false;
+    lastDetectionMsRef.current = 0;
+    lastFrameInfoRef.current = null;
+    latestTrackingProposalRef.current = null;
+    setStatus('Automatic board detection resumed.');
   };
 
   if (!permission) {
@@ -523,8 +784,13 @@ export default function LiveGameScreen() {
       ? '—'
       : `${summary.medianMs}/${summary.p95Ms} (n=${summary.count})`;
   const trackingDegraded = guidance?.trackingState === 'holding';
-  const boundaryColor = trackingDegraded ? '#F59E0B' : '#00E5FF';
-  const gridColor = trackingDegraded ? 'rgba(245, 158, 11, 0.4)' : 'rgba(0, 229, 255, 0.45)';
+  const recognitionPending = Boolean(guidance && !guidance.positionConfirmed);
+  const boundaryColor =
+    trackingDegraded || recognitionPending ? '#F59E0B' : '#00E5FF';
+  const gridColor =
+    trackingDegraded || recognitionPending
+      ? 'rgba(245, 158, 11, 0.4)'
+      : 'rgba(0, 229, 255, 0.45)';
 
   const frameInfo = lastFrameInfoRef.current;
   const viewTransform = frameInfo
@@ -549,21 +815,31 @@ export default function LiveGameScreen() {
             <View
               style={[
                 styles.statusBadge,
-                guidance?.trackingState === 'tracking'
+                guidance?.trackingState === 'tracking' && guidance.positionConfirmed
                   ? styles.badgeSuccess
-                  : guidance?.trackingState === 'holding'
+                  : guidance?.trackingState === 'tracking' || trackingDegraded
                     ? styles.badgeWarning
                     : styles.badgeDefault,
               ]}>
               <Text style={styles.badgeText}>
-                {guidance?.trackingState ? guidance.trackingState.toUpperCase() : 'SEARCHING'}
+                {guidance?.trackingState === 'tracking'
+                  ? guidance.positionConfirmed
+                    ? 'TRACKING'
+                    : 'VERIFYING'
+                  : guidance?.trackingState
+                    ? guidance.trackingState.toUpperCase()
+                    : 'SEARCHING'}
               </Text>
             </View>
-            <View style={styles.turnBadge}>
+            <Pressable
+              style={styles.turnBadge}
+              onPress={toggleTurn}
+              accessibilityRole="button"
+              accessibilityLabel="Change side to move">
               <Text style={styles.turnText}>
-                {guidance?.turn === 'w' ? 'WHITE TO MOVE' : 'BLACK TO MOVE'}
+                {guidance?.turn === 'w' ? 'WHITE TO MOVE' : 'BLACK TO MOVE'} ⇄
               </Text>
-            </View>
+            </Pressable>
             {guidance?.evaluationScore !== null && guidance?.evaluationScore !== undefined ? (
               <View style={styles.evalBadge}>
                 <Text style={styles.evalText}>
@@ -575,6 +851,11 @@ export default function LiveGameScreen() {
           <Text style={styles.instructionBanner}>
             {guidance?.instruction ?? status}
           </Text>
+          {guidance && !guidance.positionConfirmed ? (
+            <Text style={styles.warningText}>
+              Piece evidence not verified yet. Engine analysis and move arrows stay off.
+            </Text>
+          ) : null}
         </View>
 
         {/* Live Camera View with Perspective Overlays */}
@@ -686,6 +967,35 @@ export default function LiveGameScreen() {
               ) : null}
             </View>
           ) : null}
+
+          {calibrating ? (
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={(event) =>
+                handleCalibrationTap(event.nativeEvent.locationX, event.nativeEvent.locationY)
+              }>
+              <View style={styles.calibrationBanner} pointerEvents="none">
+                <Text style={styles.calibrationBannerText}>
+                  Tap corner {Math.min(calibrationPoints.length + 1, 4)}/4 · playing-area corners,
+                  not the board frame
+                </Text>
+              </View>
+              {calibrationPoints.map((point, index) => {
+                const viewPoint = viewPt(point);
+                return (
+                  <View
+                    key={`calibration-${index}`}
+                    pointerEvents="none"
+                    style={[
+                      styles.calibrationDot,
+                      { left: viewPoint.x - 14, top: viewPoint.y - 14 },
+                    ]}>
+                    <Text style={styles.calibrationDotText}>{index + 1}</Text>
+                  </View>
+                );
+              })}
+            </Pressable>
+          ) : null}
         </View>
 
         {/* Action Controls & Navigation */}
@@ -702,8 +1012,30 @@ export default function LiveGameScreen() {
             </Text>
           </Pressable>
 
+          <Pressable style={styles.utilityButton} onPress={handleAssistCorners}>
+            <Text style={styles.utilityButtonText}>
+              {calibrating ? 'Cancel Corners' : 'Assist Corners'}
+            </Text>
+          </Pressable>
+
+          {active ? (
+            <Pressable style={styles.utilityButton} onPress={handleEditPosition}>
+              <Text style={styles.utilityButtonText}>Set Position</Text>
+            </Pressable>
+          ) : null}
+
+          {manualCalibrated ? (
+            <Pressable style={styles.utilityButton} onPress={handleResumeAutoDetect}>
+              <Text style={styles.utilityButtonText}>Auto Detect</Text>
+            </Pressable>
+          ) : null}
+
           <Pressable style={styles.utilityButton} onPress={handleGoToReview}>
             <Text style={styles.utilityButtonText}>Review / Fix</Text>
+          </Pressable>
+
+          <Pressable style={styles.utilityButton} onPress={() => setNoticesVisible(true)}>
+            <Text style={styles.utilityButtonText}>Licences</Text>
           </Pressable>
         </View>
 
@@ -775,7 +1107,8 @@ export default function LiveGameScreen() {
           <Text style={styles.telemetryText}>
             Latency median/p95 ms: decode {fmtLatency(diag.latency.decode)} · trk{' '}
             {fmtLatency(diag.latency.tracker)} · det {fmtLatency(diag.latency.detection)} · samp{' '}
-            {fmtLatency(diag.latency.sampling)} · guide {fmtLatency(diag.latency.guidance)} · move{' '}
+            {fmtLatency(diag.latency.sampling)} · cls {fmtLatency(diag.latency.classifier)} · guide{' '}
+            {fmtLatency(diag.latency.guidance)} · move{' '}
             {fmtLatency(diag.latency.moveRecognition)} · engine {fmtLatency(diag.latency.engine)} · overlay{' '}
             {fmtLatency(diag.latency.overlayModel)}
           </Text>
@@ -784,8 +1117,47 @@ export default function LiveGameScreen() {
             {diag.counters.trackingDecodeFailures}/D{diag.counters.detectionDecodeFailures} · busy skips{' '}
             {diag.counters.detectionSkippedBusy} · engine results {diag.counters.engineResults}
           </Text>
+          <Text style={styles.telemetryText}>
+            Pieces: {guidance?.recognition.occupiedSquares ?? 0}/32 · conf{' '}
+            {Math.round((guidance?.recognition.averageConfidence ?? 0) * 100)}% · uncertain{' '}
+            {guidance?.recognition.uncertainSquares.length ?? 0} · classified{' '}
+            {guidance?.recognition.classifiedFrames ?? 0} · ONNX{' '}
+            {guidance?.recognition.inferenceMs !== null && guidance?.recognition.inferenceMs !== undefined
+              ? `${Math.round(guidance.recognition.inferenceMs)}ms`
+              : '—'}
+          </Text>
+          <Text style={styles.telemetryText}>
+            Position: {guidance?.positionConfirmed ? 'CONFIRMED' : 'UNVERIFIED'} · evidence{' '}
+            {guidance?.recognition.adoptionFrames ?? 0}/
+            {guidance?.recognition.adoptionWindow ?? 4} · adopt{' '}
+            {guidance?.recognition.adoptionStreak ?? 0}/
+            {guidance?.recognition.adoptionConfirmations ?? 2} · rejected{' '}
+            {guidance?.recognition.reason ?? '—'}
+          </Text>
+          <Text style={styles.telemetryText}>
+            Classifier frames {diag.counters.classificationFrames} · failures{' '}
+            {diag.counters.classificationFailures} · adoptions {diag.counters.positionAdoptions}
+          </Text>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={noticesVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setNoticesVisible(false)}>
+        <View style={styles.noticeBackdrop}>
+          <View style={styles.noticeCard}>
+            <Text style={styles.noticeTitle}>Third-party notices</Text>
+            <ScrollView style={styles.noticeScroll}>
+              <Text style={styles.noticeText}>{THIRD_PARTY_NOTICES}</Text>
+            </ScrollView>
+            <Pressable style={styles.primaryButton} onPress={() => setNoticesVisible(false)}>
+              <Text style={styles.buttonText}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -878,6 +1250,13 @@ const styles = StyleSheet.create({
     color: '#38BDF8',
     lineHeight: 20,
   },
+  warningText: {
+    marginTop: 6,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FBBF24',
+    lineHeight: 16,
+  },
   previewContainer: {
     borderRadius: 8,
     overflow: 'hidden',
@@ -886,6 +1265,7 @@ const styles = StyleSheet.create({
   },
   controlsRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     width: '100%',
     justifyContent: 'center',
@@ -918,6 +1298,64 @@ const styles = StyleSheet.create({
     color: '#E2E8F0',
     fontWeight: '600',
     fontSize: 12,
+  },
+  calibrationBanner: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    right: 8,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+  },
+  calibrationBannerText: {
+    color: '#FDE68A',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  calibrationDot: {
+    position: 'absolute',
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(37, 99, 235, 0.85)',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calibrationDotText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  noticeBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(2, 6, 23, 0.82)',
+    padding: 20,
+    justifyContent: 'center',
+  },
+  noticeCard: {
+    maxHeight: '85%',
+    backgroundColor: '#111827',
+    borderRadius: 12,
+    padding: 16,
+    gap: 12,
+  },
+  noticeTitle: {
+    color: '#F8FAFC',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  noticeScroll: {
+    flexGrow: 0,
+  },
+  noticeText: {
+    color: '#CBD5E1',
+    fontSize: 12,
+    lineHeight: 18,
   },
   status: {
     color: '#CBD5E1',
