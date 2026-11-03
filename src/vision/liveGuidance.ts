@@ -34,6 +34,7 @@ import {
   recognizePositionFromObservations,
   suggestPositionFromObservations,
   summarizeSquareEvidence,
+  type DiagnosticSquareDetail,
 } from './pieceRecognition.ts';
 
 export type TrackingSource = 'detector' | 'motion' | 'hold' | 'none';
@@ -81,6 +82,10 @@ export interface LiveRecognitionState {
   adoptionConfirmations: number;
   /** Native ONNX inference time for the most recent classified frame. */
   inferenceMs: number | null;
+  /** Native RGB square crop preparation duration for the most recent classified frame. */
+  cropPrepMs: number | null;
+  /** Probabilities and top classes for key diagnostic squares (kings, center). */
+  diagnosticSquares: DiagnosticSquareDetail[];
 }
 
 export interface LiveGuidanceModel {
@@ -171,9 +176,11 @@ export class LiveGuidanceCoordinator {
     occupiedSquares: 0,
     averageConfidence: 0,
     uncertainSquares: [] as string[],
+    diagnosticSquares: [] as DiagnosticSquareDetail[],
   };
   private classifiedFrames = 0;
   private lastInferenceMs: number | null = null;
+  private lastCropPrepMs: number | null = null;
 
   constructor(options: LiveGuidanceOptions = {}) {
     this.orientation = options.orientation ?? 'white_bottom';
@@ -220,10 +227,13 @@ export class LiveGuidanceCoordinator {
     return this.positionConfirmed;
   }
 
-  /** Records native inference latency without changing board state. */
-  noteClassification(inferenceMs: number): void {
+  /** Records native inference and crop preparation latency without changing board state. */
+  noteClassification(inferenceMs: number, cropPrepMs?: number): void {
     if (Number.isFinite(inferenceMs) && inferenceMs >= 0) {
       this.lastInferenceMs = inferenceMs;
+    }
+    if (typeof cropPrepMs === 'number' && Number.isFinite(cropPrepMs) && cropPrepMs >= 0) {
+      this.lastCropPrepMs = cropPrepMs;
     }
   }
 
@@ -575,6 +585,8 @@ export class LiveGuidanceCoordinator {
         adoptionWindow: this.adoptionWindow,
         adoptionConfirmations: this.adoptionConfirmations,
         inferenceMs: this.lastInferenceMs,
+        cropPrepMs: this.lastCropPrepMs,
+        diagnosticSquares: this.recognitionSummary.diagnosticSquares,
       },
       stageTimings: {
         trackerMs,
@@ -621,6 +633,7 @@ export class LiveGuidanceCoordinator {
       occupiedSquares: summary.occupiedSquares,
       averageConfidence: summary.averageConfidence,
       uncertainSquares: summary.uncertainSquares,
+      diagnosticSquares: summary.diagnosticSquares,
     };
   }
 
@@ -656,9 +669,11 @@ export class LiveGuidanceCoordinator {
       occupiedSquares: 0,
       averageConfidence: 0,
       uncertainSquares: [],
+      diagnosticSquares: [],
     };
     this.classifiedFrames = 0;
     this.lastInferenceMs = null;
+    this.lastCropPrepMs = null;
   }
 }
 

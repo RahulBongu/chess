@@ -400,19 +400,24 @@ class LiveCameraView(
           // validated corners. This runs on the native camera executor and
           // sends only probabilities across the bridge.
           var inferenceMs = 0L
+          var cropPrepMs = 0L
           var inferenceScores: FloatArray? = null
           var inferenceRequestId = 0
           val corners = classificationCorners
           if (classificationEnabled && corners != null && corners.size == 8) {
             inferenceRequestId = classificationRequestId
-            val inferenceStart = System.currentTimeMillis()
             try {
-              inferenceScores = squareClassifier.classify(
+              val classification = squareClassifier.classify(
                 rgbaBytes,
                 outputWidth,
                 outputHeight,
                 corners,
               )
+              if (classification != null) {
+                inferenceScores = classification.scores
+                cropPrepMs = classification.cropPrepMs
+                inferenceMs = classification.onnxMs
+              }
             } catch (error: Exception) {
               // A missing or incompatible model must not drop the camera frame:
               // detection/tracking still work, recognition simply reports no
@@ -425,7 +430,6 @@ class LiveCameraView(
                 )
               }
             }
-            inferenceMs = System.currentTimeMillis() - inferenceStart
           }
 
           analysisBusy.set(true)
@@ -456,6 +460,7 @@ class LiveCameraView(
           if (scores != null && corners != null) {
             payload["squareScores"] = scores.toList()
             payload["classificationCorners"] = corners.toList()
+            payload["cropPrepMs"] = cropPrepMs
             payload["inferenceMs"] = inferenceMs
             payload["classificationRequestId"] = inferenceRequestId
           }

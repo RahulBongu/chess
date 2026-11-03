@@ -239,10 +239,17 @@ export function rotateSquareProbabilities(
   return rotated;
 }
 
+export interface DiagnosticSquareDetail {
+  square: ChessSquare;
+  topClass: PieceClass;
+  probability: number;
+}
+
 export interface SquareEvidenceSummary {
   occupiedSquares: number;
   averageConfidence: number;
   uncertainSquares: ChessSquare[];
+  diagnosticSquares: DiagnosticSquareDetail[];
 }
 
 /**
@@ -333,17 +340,37 @@ export function observationsFromFen(fen: string): SquareObservation[] | null {
   return result;
 }
 
+const DIAGNOSTIC_WATCH_SQUARES: readonly ChessSquare[] = [
+  'e1',
+  'e8',
+  'd1',
+  'd8',
+  'e4',
+  'd4',
+];
+
 /** Lightweight HUD summary of the same evidence the adoption gate uses. */
 export function summarizeSquareEvidence(observations: SquareObservation[]): SquareEvidenceSummary {
   let occupiedSquares = 0;
   let confidenceSum = 0;
   const uncertainSquares: ChessSquare[] = [];
+  const diagnosticSquares: DiagnosticSquareDetail[] = [];
+
   for (const observation of observations) {
     const top = observation.classProbabilities
       ? classProbabilitiesToTop(observation.classProbabilities)
       : null;
     if (!top) continue;
     const pieceClass = PIECE_CLASSES[top.index];
+
+    if (DIAGNOSTIC_WATCH_SQUARES.includes(observation.square)) {
+      diagnosticSquares.push({
+        square: observation.square,
+        topClass: pieceClass,
+        probability: Math.round(top.probability * 100) / 100,
+      });
+    }
+
     if (pieceClass === 'empty') continue;
     if (top.probability >= 0.34 && top.probability - top.secondProbability >= 0.06) {
       occupiedSquares += 1;
@@ -356,6 +383,7 @@ export function summarizeSquareEvidence(observations: SquareObservation[]): Squa
     occupiedSquares,
     averageConfidence: occupiedSquares > 0 ? confidenceSum / occupiedSquares : 0,
     uncertainSquares,
+    diagnosticSquares,
   };
 }
 

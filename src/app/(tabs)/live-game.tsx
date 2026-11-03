@@ -272,6 +272,7 @@ export default function LiveGameScreen() {
         squareScores?: number[];
         classificationCorners?: number[];
         inferenceMs?: number;
+        cropPrepMs?: number;
         classificationRequestId?: number;
       };
     }) => {
@@ -402,7 +403,12 @@ export default function LiveGameScreen() {
             diagnostics.counters.classificationFrames += 1;
             if (typeof native.inferenceMs === 'number') {
               diagnostics.record('classifier', native.inferenceMs);
-              coordinator?.noteClassification(native.inferenceMs);
+            }
+            if (typeof native.cropPrepMs === 'number') {
+              diagnostics.record('cropPrep', native.cropPrepMs);
+            }
+            if (typeof native.inferenceMs === 'number' || typeof native.cropPrepMs === 'number') {
+              coordinator?.noteClassification(native.inferenceMs ?? 0, native.cropPrepMs);
             }
 
             // A still image cannot prove side to move, and a 180-degree
@@ -1106,8 +1112,8 @@ export default function LiveGameScreen() {
           </Text>
           <Text style={styles.telemetryText}>
             Latency median/p95 ms: decode {fmtLatency(diag.latency.decode)} · trk{' '}
-            {fmtLatency(diag.latency.tracker)} · det {fmtLatency(diag.latency.detection)} · samp{' '}
-            {fmtLatency(diag.latency.sampling)} · cls {fmtLatency(diag.latency.classifier)} · guide{' '}
+            {fmtLatency(diag.latency.tracker)} · det {fmtLatency(diag.latency.detection)} · crop{' '}
+            {fmtLatency(diag.latency.cropPrep)} · ONNX {fmtLatency(diag.latency.classifier)} · guide{' '}
             {fmtLatency(diag.latency.guidance)} · move{' '}
             {fmtLatency(diag.latency.moveRecognition)} · engine {fmtLatency(diag.latency.engine)} · overlay{' '}
             {fmtLatency(diag.latency.overlayModel)}
@@ -1124,6 +1130,9 @@ export default function LiveGameScreen() {
             {guidance?.recognition.classifiedFrames ?? 0} · ONNX{' '}
             {guidance?.recognition.inferenceMs !== null && guidance?.recognition.inferenceMs !== undefined
               ? `${Math.round(guidance.recognition.inferenceMs)}ms`
+              : '—'} · crop{' '}
+            {guidance?.recognition.cropPrepMs !== null && guidance?.recognition.cropPrepMs !== undefined
+              ? `${Math.round(guidance.recognition.cropPrepMs)}ms`
               : '—'}
           </Text>
           <Text style={styles.telemetryText}>
@@ -1134,6 +1143,17 @@ export default function LiveGameScreen() {
             {guidance?.recognition.adoptionConfirmations ?? 2} · rejected{' '}
             {guidance?.recognition.reason ?? '—'}
           </Text>
+          <Text style={styles.telemetryText}>
+            FEN: {guidance?.positionConfirmed ? guidance.fen : (guidance?.recognition.candidateFen ?? '—')}
+          </Text>
+          {guidance?.recognition.diagnosticSquares && guidance.recognition.diagnosticSquares.length > 0 ? (
+            <Text style={styles.telemetryText}>
+              Key squares:{' '}
+              {guidance.recognition.diagnosticSquares
+                .map((d) => `${d.square}:${d.topClass.replace('white_', 'w').replace('black_', 'b')}(${Math.round(d.probability * 100)}%)`)
+                .join(' · ')}
+            </Text>
+          ) : null}
           <Text style={styles.telemetryText}>
             Classifier frames {diag.counters.classificationFrames} · failures{' '}
             {diag.counters.classificationFailures} · adoptions {diag.counters.positionAdoptions}

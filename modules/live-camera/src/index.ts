@@ -22,6 +22,8 @@ export interface LiveCameraFrameEvent {
   classificationCorners?: number[];
   /** Native ONNX inference duration for this frame. */
   inferenceMs?: number;
+  /** Native RGB square crop preparation duration for this frame. */
+  cropPrepMs?: number;
   /** Correlates this frame with the corner update that produced it. */
   classificationRequestId?: number;
 }

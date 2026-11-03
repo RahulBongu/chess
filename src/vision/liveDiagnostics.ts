@@ -95,6 +95,7 @@ export interface LiveDiagLatency {
   tracker: StageLatencySummary;
   detection: StageLatencySummary;
   sampling: StageLatencySummary;
+  cropPrep: StageLatencySummary;
   classifier: StageLatencySummary;
   guidance: StageLatencySummary;
   moveRecognition: StageLatencySummary;
@@ -201,6 +202,7 @@ const STAGE_KEYS: readonly StageKey[] = [
   'tracker',
   'detection',
   'sampling',
+  'cropPrep',
   'classifier',
   'guidance',
   'moveRecognition',
@@ -402,6 +404,7 @@ export function createEmptySnapshot(): LiveDiagSnapshot {
       tracker: summarizeLatency([]),
       detection: summarizeLatency([]),
       sampling: summarizeLatency([]),
+      cropPrep: summarizeLatency([]),
       classifier: summarizeLatency([]),
       guidance: summarizeLatency([]),
       moveRecognition: summarizeLatency([]),

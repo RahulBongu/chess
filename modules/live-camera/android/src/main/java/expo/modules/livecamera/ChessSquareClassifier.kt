@@ -37,6 +37,12 @@ class ChessSquareClassifier(private val context: Context) {
     )
   }
 
+  data class ClassificationResult(
+    val scores: FloatArray,
+    val cropPrepMs: Long,
+    val onnxMs: Long,
+  )
+
   private val environment: OrtEnvironment = OrtEnvironment.getEnvironment()
   private val sessionDelegate = lazy {
     val options = OrtSession.SessionOptions()
@@ -72,10 +78,11 @@ class ChessSquareClassifier(private val context: Context) {
     width: Int,
     height: Int,
     normalizedCorners: DoubleArray,
-  ): FloatArray? {
+  ): ClassificationResult? {
     if (normalizedCorners.size != 8 || width < 8 || height < 8) {
       return null
     }
+    val prepStart = System.currentTimeMillis()
     val corners = arrayOf(
       Point(normalizedCorners[0] * width, normalizedCorners[1] * height),
       Point(normalizedCorners[2] * width, normalizedCorners[3] * height),
@@ -111,7 +118,11 @@ class ChessSquareClassifier(private val context: Context) {
         }
       }
     }
-    return runInput()
+    val cropPrepMs = System.currentTimeMillis() - prepStart
+    val onnxStart = System.currentTimeMillis()
+    val scores = runInput() ?: return null
+    val onnxMs = System.currentTimeMillis() - onnxStart
+    return ClassificationResult(scores, cropPrepMs, onnxMs)
   }
 
   private fun runInput(): FloatArray? {
