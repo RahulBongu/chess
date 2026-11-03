@@ -1,9 +1,9 @@
-# Milestone 5.3B — Assisted Calibration UX and Geometry Quality Gates
+# Milestone 5.3C — Geometry Metric Reconciliation and Calibration Robustness
 
-**Milestone:** 5.3B  
+**Milestone:** 5.3C  
 **Date:** 2026-11-03  
 **Target Repository:** `https://github.com/RahulBongu/chess.git`  
-**Starting Commit:** `b83ed77` (verified synchronized with `origin/main`)  
+**Starting Commit:** `3290082` (verified synchronized with `origin/main`)  
 **Production Model Weights:** `src/vision/pieceModelWeights.ts` (version `1.0.0-synthetic-staunton-v1`, strictly **UNCHANGED**)  
 **Preserved Release Artifacts:** All 35 files under `dist/` intact; `modules/live-camera/android/build/` untouched.  
 **Physical Capture Status:** Set 01 physical capture remains explicitly **PENDING**; external benchmarks do not substitute for in-house studio capture.
@@ -12,127 +12,104 @@
 
 ## 1. Executive Summary & Objective
 
-Milestone 5.3B audits and improves the existing manual/assisted board-calibration workflow, verifies coordinate-handling and aspect-ratio preservation across display boundaries, corrects the reporting of geometry benchmark metrics by strictly separating candidate proposals from accepted detections, and adds actionable UI quality gates without replacing manual calibration with unproven autonomous detectors.
+Milestone 5.3C resolves the metric reconciliation between proposal-level and accepted-level geometry figures, strengthens corner-ordering and coordinate-boundary test coverage, characterizes the ground-truth-seeded assisted calibration simulation with comprehensive distributional metrics (mean, median, P90, P95), and establishes a fully reproducible benchmark baseline.
 
-### Key Conclusions & Improvements
-1. **Calibration Workflow & Coordinate Flow Audited (Gate 1):**
-   - Verified that display normalization ($x_{\text{norm}} = x_{\text{touch}} / w_{\text{display}}$) preserves the camera aspect ratio ($h_{\text{display}} = \text{round}(w_{\text{display}} \cdot H_{\text{orig}} / W_{\text{orig}}$).
-   - In `src/app/board-review.tsx`, mapping normalized coordinates via $x_{\text{norm}} \cdot \text{src.cols}$ and $y_{\text{norm}} \cdot \text{src.rows}$ maps directly to original sensor pixels without geometric loss.
-   - Geometry calibration remains strictly decoupled from chessboard orientation: 4-corner calibration defines only the projective homography to an $800\times 800$ square board; White-bottom vs Black-bottom orientation is chosen during Board Review.
-2. **Benchmark Metric Definitions Corrected (Gate 2):**
-   - **Flaw in Unstratified Presentation:** In Milestone 5.3A, reporting 0.0% recall alongside 37.7% IoU in the same row created potential ambiguity as to whether accepted detections had 37.7% IoU.
-   - **Corrected Stratification:**
-     - **Accepted Detections (Threshold $\text{confidence} \ge 0.32$):** Production Baseline (Approach A) achieves **0 / 385 (0.0% Recall)**. Because 0 detections were accepted, accepted-detection IoU is strictly **N/A (0 detections)**.
-     - **Candidate-Proposal Diagnostics:** Evaluated across all raw contour proposals before pattern confidence filtering, Approach A produces proposals on 385/385 images with **37.7% Mean IoU** and **23.4% Normalized Corner Error**.
-     - **Simulated Assisted Calibration (Approach D):** Formally disclosed as a **synthetic touch-perturbation simulation** ($\mathcal{N}(0, 0.03^2 D^2)$ noise, seed 42, Shi-Tomasi 5% search window) centered on FENiT annotations, achieving **100.0% Recall**, **83.0% Mean IoU**, and **3.1% Normalized Corner Error**. It is NOT a measured human-operator device result.
-3. **Assisted Calibration UX Enhancements (Gate 3):**
-   - In `src/app/(tabs)/camera-setup.tsx`, added actionable validation warning banners displaying the exact geometric rejection reason (`validation.reason`) whenever 4 corners are selected but invalid.
-   - Added `reorderCalibrationPoints` ("Sort corners clockwise") action to both still-photo and live-camera calibration paths. If a user taps or drags corners in counter-clockwise or unaligned order, this action normalizes them clockwise starting from top-left without requiring a complete reset.
-   - Preserved manual calibration as the mandatory primary workflow. Autonomous detection remains an optional assistive probe.
-
----
-
-## 2. Calibration Workflow & Coordinate Integrity Audit (Gate 1)
-
-### 2.1 Coordinate Conversion Flow
-The coordinate transformation pipeline from user touch to perspective rectification was traced across `camera-setup.tsx`, `calibration/geometry.ts`, and `board-review.tsx`:
-
-```
-User Touch on Displayed Preview (x_touch, y_touch)
-                   │
-                   ▼
-Display Normalization:
-  w_disp = min(windowWidth - 24, 480)
-  h_disp = round(w_disp * (H_orig / W_orig))
-  x_norm = clamp01(x_touch / w_disp)
-  y_norm = clamp01(y_touch / h_disp)
-                   │
-                   ▼
-Geometric Validation (isValidCalibration):
-  - 4 points present
-  - Within [0, 1] bounds
-  - Min separation: dist^2 >= 0.05^2
-  - Non-self-intersecting: segmentsIntersect(e0, e2) == False && segmentsIntersect(e1, e3) == False
-  - Min enclosed area: abs(signedArea) >= 0.02
-  - Clockwise orientation: signedArea > 0
-                   │
-                   ▼
-Original-Resolution Scaling (in board-review.tsx):
-  x_pixel = x_norm * src.cols
-  y_pixel = y_norm * src.rows
-                   │
-                   ▼
-Homography & Rectification (rectifyMat):
-  cv2.warpPerspective(src, H, (800, 800))
-                   │
-                   ▼
-Orientation Assignment (Independent of Geometry):
-  orientation in {'white-bottom', 'black-bottom'}
-```
-
-### 2.2 Verification Findings
-1. **Aspect Ratio Preservation:** `h_disp` is derived dynamically from `capturedImage.height / capturedImage.width`. The aspect ratio of the displayed image matches the captured camera sensor aspect ratio exactly, ensuring no non-uniform stretching occurs during touch normalization.
-2. **Device Orientation & Rotation:** Coordinates are normalized relative to the displayed preview layout. When an image is loaded into OpenCV `Mat`, `src.cols` and `src.rows` correspond to the width and height of the decoded bitmap, matching the normalized ratios $x_{\text{norm}}$ and $y_{\text{norm}}$.
-3. **Decoupling Geometry from Orientation:** Calibration stores only the four boundary points defining the board quadrilateral. The algebraic orientation (whether the near edge is Rank 1 or Rank 8) is selected in Board Review, preserving strict separation between geometric planar homography and game-state orientation.
+### Key Audit Reconciliations & Robustness Gates
+1. **Approach B Metrics Reconciled (Gate 1):**
+   - **Discrepancy Explained:** In Milestone 5.3B, Approach B reported $55.7\%$ accepted-level IoU alongside $39.5\%$ proposal-level IoU despite having identical sample counts ($273/385$).
+   - **Root Cause & Mathematical Proof:**
+     - The accepted-level metric evaluated **only the 273 images where a candidate proposal was found** ($N=273$), yielding a conditional mean IoU of $\mathbf{55.68\%}$ and mean corner error of $\mathbf{15.68\%}$.
+     - The proposal-level diagnostic evaluated **all 385 images in the dataset** ($N=385$), assigning $0\%$ IoU and $100\%$ corner error penalty to the 112 images where no candidate was found:
+       $$\text{Proposal Mean IoU} = 55.68\% \times \frac{273}{385} = \mathbf{39.48\%}$$
+       $$\text{Proposal Mean Corner Error} = 15.68\% \times \frac{273}{385} + 100.0\% \times \frac{112}{385} = 11.12\% + 29.09\% = \mathbf{40.21\%}$$
+     - The candidate population was identical ($273$ images), but the denominators differed ($273$ vs $385$). Both figures are now explicitly defined and mathematically verified.
+   - **Relaxed Threshold Disclosure:** In Approach B, the 273 candidates were "accepted" under a relaxed experimental threshold ($\text{confidence} = 0.35$ assigned to any convex quad) that completely bypassed the production checkerboard pattern evidence check. Under the true production acceptance gate (pattern fit $\ge 0.55$, alternation $\ge 0.80$, contrast $\ge 8$), **0 / 385** Approach B candidates pass.
+2. **Ground-Truth-Seeded Assisted-Calibration Characterization (Gate 2):**
+   - Formally designated as a **Ground-Truth-Seeded Assisted-Calibration Simulation** (evaluated with fixed random seed `42` on 385 FENiT annotations with Gaussian noise $\sigma = 0.03 \times \text{diagonal}$).
+   - **Initial Perturbed Taps (Before Refinement):**
+     - Mean IoU: **81.36%** (Median: **81.75%**, P90: **87.83%**)
+     - Mean Corner Error: **3.71%** (Median: **3.66%**, P90: **4.93%**, P95: **5.35%**)
+   - **Post-Refinement Snapped Corners (Local Shi-Tomasi in 5% window):**
+     - Mean IoU: **83.09%** (Median: **83.81%**, P90: **92.60%**)
+     - Mean Corner Error: **3.10%** (Median: **2.99%**, P90: **4.98%**, P95: **5.53%**)
+   - **Convexity Quality Gate:** Local snapping corrupted the quadrilateral into a non-convex shape on **1 of 385 boards (0.26%)**, which was safely rejected by the convexity check (`isContourConvex`).
+   - **Disclosure:** This evaluates local feature snapping on perturbed ground-truth; it is **NOT** a measured human-operator device result.
+3. **Corner-Ordering Invariance & Boundary Test Coverage (Gate 3 & Gate 4):**
+   - Added automated tests proving that `reorderCalibrationPoints` correctly normalizes **all 24 permutations ($4! = 24$)** of known convex quadrilaterals without mutating $(x, y)$ coordinates.
+   - Verified that steep perspective trapezoids and rotated diamond quadrilaterals reorder cleanly to valid clockwise orientation.
+   - Quantified aspect-ratio display quantization error: integer display pixel rounding ($h_{\text{disp}} = \text{round}(w_{\text{disp}} \cdot H / W)$) introduces $\le 0.5 \text{ px}$ rounding, resulting in a strictly bounded relative aspect-ratio error of **$< 0.35\%$** across displays $\ge 320 \text{ px}$ width. Extreme boundary points $[0.0, 1.0]$ map exactly to sensor boundaries.
 
 ---
 
-## 3. Corrected Benchmark Metric Definitions (Gate 2)
+## 2. Reconciled Geometry Benchmark Baseline (Gate 1 & Gate 2)
 
-### 3.1 Stratified Accounting: Accepted Detections vs Candidate Proposals
-To prevent confusion between candidate-proposal heuristics and production-accepted detections, metrics across all 385 FENiT full-board scenes are reported in two strictly separated tables:
+### 2.1 Reconciled Comparative Summary Table (385 Real FENiT Boards)
 
-#### Part 1: Production Accepted Detections (Threshold: Confidence $\ge 0.32$)
-Only candidates that satisfy all production validity checks (area $\ge 0.05$, convexity, and checkerboard pattern evidence fit $\ge 0.55$, alternation $\ge 0.80$, contrast $\ge 8$) are included:
+The table below presents the verified benchmark baseline, strictly separating accepted detections from candidate proposals with explicit denominators:
 
-| Approach | Accepted Count | Accepted Recall | Accepted Mean IoU | Accepted Mean Corner Error | Status / Note |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| **Approach A: Production Baseline** | **0 / 385** | **0.0%** | **N/A (0 detections)** | **N/A (0 detections)** | 100% of candidates failed checkerboard pattern check |
-| **Approach B: Multi-Scale Edge** | **273 / 385** | **70.9%** | **55.7%** | **15.7%** | Relaxed thresholds accepted rough outer contours |
-| **Approach C: Hough Lines** | **0 / 385** | **0.0%** | **N/A (0 detections)** | **N/A (0 detections)** | High line clutter prevented boundary quadrilateral clustering |
-| **Approach D: Simulated Assisted Calibration** | **385 / 385** | **100.0%** | **83.0%** | **3.1%** | Synthetic touch perturbation simulation ($\pm 3\%$ diag noise) |
+| Approach | Accepted Count | Accepted Recall | Accepted Mean IoU ($N_{\text{acc}}$) | Accepted Corner Error ($N_{\text{acc}}$) | Candidate Proposals ($N_{\text{prop}}$) | Proposal Mean IoU ($N=385$) | Proposal Corner Error ($N=385$) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Approach A: Production Baseline** (Canny + `minAreaRect` + Pattern) | **0 / 385** | **0.0%** | **N/A (0 det)** | **N/A (0 det)** | **385 / 385** (100.0%) | **37.7%** | **23.4%** |
+| **Approach B: Multi-Scale Edge** (Canny + Morph Close + Convex Hull) | **273 / 385** | **70.9%** | **55.7%** | **15.7%** | **273 / 385** (70.9%) | **39.5%** | **40.2%** |
+| **Approach C: Hough Lines** (`HoughLinesP` + Vanishing Point Intersections) | **0 / 385** | **0.0%** | **N/A (0 det)** | **N/A (0 det)** | **344 / 385** (89.3%) | **35.7%** | **31.0%** |
+| **Approach D: Ground-Truth-Seeded Assisted Calibration Simulation** | **384 / 385** | **99.7%** | **83.1%** | **3.1%** | **385 / 385** (100.0%) | **83.0%** | **3.1%** |
 
----
-
-#### Part 2: Candidate-Proposal Diagnostics (Raw Contour / Geometry Quality)
-Evaluates the geometric quality of candidate proposals before applying pattern evidence or confidence thresholds:
-
-| Approach | Proposals Found | Proposal Rate | Proposal Mean IoU | Proposal Corner Error | Proposals with $\text{IoU} \ge 50\%$ | Proposals with $\text{IoU} \ge 70\%$ |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Approach A: Production Baseline** | 385 / 385 | 100.0% | **37.7%** | **23.4%** | 15.8% (61 / 385) | 1.8% (7 / 385) |
-| **Approach B: Multi-Scale Edge** | 273 / 385 | 70.9% | **39.5%** | **40.2%** | 41.0% (158 / 385) | 4.9% (19 / 385) |
-| **Approach C: Hough Lines** | 344 / 385 | 89.3% | **35.7%** | **31.0%** | 21.0% (81 / 385) | 3.4% (13 / 385) |
-
-*Key Diagnostic Finding:* While Approach A generates candidate proposals on 100% of images (primarily via `minAreaRect`), its proposals achieve only 37.7% IoU because a 2D rectangle cannot fit an oblique perspective trapezoid. The production filter correctly rejects 100% of these substandard proposals, yielding 0.0% accepted recall.
+*Threshold Disclosures:*
+- **Approach A & C Acceptance Gate:** Production threshold ($\text{confidence} \ge 0.32$), requiring strict checkerboard pattern evidence (fit $\ge 0.55$, alternation $\ge 0.80$, contrast $\ge 8$). Both failed 100% on raw uncalibrated scenes.
+- **Approach B Acceptance Gate:** Relaxed experimental threshold ($\text{confidence} = 0.35$ assigned to any convex hull quad), completely bypassing checkerboard pattern verification. If evaluated under production pattern evidence, Approach B acceptance is **0 / 385 (0.0%)**.
+- **Approach D Simulation:** 1 quad out of 385 was rejected due to non-convexity after local snapping, yielding 384/385 accepted.
 
 ---
 
-### 3.2 Specification of Simulated Assisted Calibration (Approach D)
-* **Simulation Input:** Ground-truth corner coordinates from the 385 eligible FENiT annotations.
-* **Perturbation Model:** Independent 2D Gaussian noise added to each corner:
-  $$\Delta x, \Delta y \sim \mathcal{N}(0, \sigma^2), \quad \sigma = 0.03 \times \text{diagonal}$$
-  Simulates typical finger-touch targeting error on mobile displays ($\approx 25-40$ pixels).
-* **Deterministic Execution:** Fixed random seed `42`.
-* **Corner Refinement Method:** Local Shi-Tomasi / Harris corner detection (`cv2.goodFeaturesToTrack`) within a $5\%$ diagonal search window centered at the perturbed touch coordinate.
-* **Measured Result:** **100.0% Recall**, **83.0% Mean IoU**, **3.1% Mean Corner Error** ($99.0\% \ge 50\%$ IoU, $94.8\% \ge 70\%$ IoU).
-* **Explicit Caveat:** This evaluates algorithm snapping on perturbed ground truth; it is **NOT** a measured human-operator device result.
+### 2.2 Detailed Statistical Distribution of Approach D Simulation
+Evaluated from the identical 385 FENiT board corner annotations with Gaussian touch noise ($\sigma = 0.03 \times D$, seed `42`):
+
+| Evaluation Stage | Mean IoU | Median IoU | P90 IoU | Mean Corner Error | Median Corner Error | P90 Corner Error | P95 Corner Error | Rejections |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Initial Coarse Taps (Before Refinement)** | 81.36% | 81.75% | 87.83% | 3.71% | 3.66% | 4.93% | 5.35% | 0 |
+| **Post-Refinement Snapped Corners** | **83.09%** | **83.81%** | **92.60%** | **3.10%** | **2.99%** | **4.98%** | **5.53%** | 1 (0.26%) |
 
 ---
 
-## 4. Assisted Calibration UX & Safety Improvements (Gate 3)
+## 3. Corner Ordering Invariance & Coordinate Quality Gates (Gate 3 & Gate 4)
 
-Based on the source audit of `src/app/(tabs)/camera-setup.tsx`, the following targeted improvements were implemented:
+### 3.1 24-Permutation Ordering Invariance
+An automated test suite verified that `reorderCalibrationPoints` guarantees coordinate invariance across all $4! = 24$ permutations:
+- **No Coordinate Mutation:** For every permutation $\sigma(P)$, the set of resulting coordinate values equals the original set:
+  $$\{P_{\sigma(0)}, P_{\sigma(1)}, P_{\sigma(2)}, P_{\sigma(3)}\} = \{P_0, P_1, P_2, P_3\}$$
+- **Deterministic Starting Point:** The first corner is uniquely defined as $P_{\text{TL}} = \arg\min_{P \in \text{quad}} (x + y)$ (the top-leftmost vertex).
+- **Clockwise Traversal:** Angular sorting around the centroid ensures consecutive vertices traverse clockwise in screen coordinates.
+- **Convexity Invariance:** All 24 permutations of any convex quadrilateral pass `isValidCalibration(reordered).valid === true`.
 
-1. **Actionable Validation Feedback Banner:**
-   When 4 corners are selected or detected but fail geometric validation (`isValidCalibration === false`), the UI now renders an explicit warning banner displaying `validation.reason` directly above the controls (e.g., *"The selected corners form a self-intersecting quadrilateral"* or *"Select the corners in top-left, top-right, bottom-right, bottom-left order"*).
-2. **Clockwise Corner Normalization Action (`reorderCalibrationPoints`):**
-   Added `reorderCalibrationPoints` to `src/calibration/geometry.ts` and wired it to a *"Sort corners clockwise"* button in both still-photo and live-camera calibration views. If a user selects corners counter-clockwise or out of order, tapping this button automatically sorts the points clockwise starting from top-left, transforming an invalid ordering into a valid calibration without requiring a full reset.
-3. **Preservation of Manual Control:**
-   No corner coordinates are moved or adjusted silently. Automatic detection remains an optional assistive probe, and user confirmation is mandatory before any geometry is committed.
+### 3.2 Degenerate and Ambiguous Input Rejection
+Geometric validation (`isValidCalibration`) reliably detects and rejects:
+1. **Self-Intersecting Bowties:** Opposite edge intersection (`segmentsIntersect`) flags crossing edges.
+2. **Collinear / Zero-Area Points:** Enclosed area $< 0.02$ flags flattened or degenerate selections.
+3. **Nearly Coincident Points:** Squared distance $< 0.05^2$ flags duplicate touches.
+4. **Out-of-Bounds Touches:** Coordinates outside $[0.0, 1.0]$ are blocked.
+
+### 3.3 Display Normalization and Aspect-Ratio Rounding Error Bounds
+- In `src/app/(tabs)/camera-setup.tsx`, preview height is calculated as:
+  $$h_{\text{disp}} = \text{round}\left(w_{\text{disp}} \cdot \frac{H_{\text{orig}}}{W_{\text{orig}}}\right)$$
+- Because $h_{\text{disp}}$ is an integer pixel value, a quantization rounding difference of $|h_{\text{disp}} - w_{\text{disp}} \cdot (H/W)| \le 0.5 \text{ px}$ occurs.
+- **Verified Error Bound:** Across standard mobile display widths ($w_{\text{disp}} \ge 320 \text{ px}$) and sensor formats (4:3, 16:9, 3:4, 9:16, 1:1, 5712:4284), the relative aspect-ratio error is strictly bounded below **$0.35\%$** (less than $1/280\text{th}$).
+- Extreme boundary touches ($[0.0, 0.0]$ to $[1.0, 1.0]$) map exactly to $(0, 0)$ and $(W_{\text{orig}}, H_{\text{orig}})$ without clipping.
 
 ---
 
-## 5. Verification and Publication (Gates 5 & 6)
+## 4. Assisted Calibration UX Implementation (Gate 3)
+
+The following UI improvements are active in `src/app/(tabs)/camera-setup.tsx`:
+1. **Actionable Validation Warning Banner:**
+   When 4 corners are selected or detected but fail geometric validation (`isValidCalibration === false`), an explicit warning banner renders `validation.reason` directly above the controls (e.g., *"The selected corners form a self-intersecting quadrilateral"* or *"Select the corners in top-left, top-right, bottom-right, bottom-left order"*).
+2. **Clockwise Corner Normalization Button (`reorderCalibrationPoints`):**
+   A *"Sort corners clockwise"* button normalizes unaligned or counter-clockwise corner selections into canonical clockwise order without requiring the user to reset all 4 points.
+3. **Primary Workflow Preservation:**
+   Manual corner calibration remains the mandatory primary workflow. Autonomous detection remains an optional assistive probe, and user confirmation is required before any geometry is committed.
+
+---
+
+## 5. Verification and Publication (Gate 5)
 
 ### 5.1 Test Suites and Typecheck
 1. **Python Unit & Geometry Tests:**
@@ -140,12 +117,12 @@ Based on the source audit of `src/app/(tabs)/camera-setup.tsx`, the following ta
    npm run test:python
    # py -m unittest tests.test_capture_pipeline -v
    ```
-   *Result:* 17/17 tests pass in 3.93 s (includes tests for polygon IoU, cyclic corner error invariance, screen-space ordering, and simulated assisted calibration).
+   *Result:* 17/17 tests pass in 3.93 s.
 2. **JavaScript / TypeScript Test Suite:**
    ```bash
    npm test
    ```
-   *Result:* 187/187 tests pass across 13 test suites in 12.8 s (includes new test `reorderCalibrationPoints normalizes counter-clockwise or unaligned corners to valid clockwise order` in `tests/calibration.test.ts`).
+   *Result:* 192/192 tests pass across 13 test suites in 12.9 s (includes 5 new comprehensive calibration geometry and aspect-ratio quantization tests in `tests/calibration.test.ts`).
 3. **TypeScript Typecheck:**
    ```bash
    npm run typecheck
@@ -156,7 +133,7 @@ Based on the source audit of `src/app/(tabs)/camera-setup.tsx`, the following ta
 ### 5.2 Working Tree Audit
 * All 35 `dist/` files preserved bit-for-bit.
 * `modules/live-camera/android/build/` untouched.
-* `src/vision/pieceModelWeights.ts` unchanged.
+* `src/vision/pieceModelWeights.ts` unchanged (`1.0.0-synthetic-staunton-v1`).
 * Zero external dataset files, raw images, or crops staged in Git.
 
 ---
@@ -165,18 +142,17 @@ Based on the source audit of `src/app/(tabs)/camera-setup.tsx`, the following ta
 
 | Gate | Requirement | Status | Evidence / Notes |
 | :--- | :--- | :---: | :--- |
-| **Gate 0** | Preservation | **PASS** | 35 `dist/` files intact; `modules/live-camera/android/build/` untouched; production weights unchanged; no APK built or installed. |
-| **Gate 1** | Calibration Workflow Audit | **PASS** | Audited `camera-setup.tsx`, `board-review.tsx`, `calibration/geometry.ts`; verified aspect-ratio preservation and coordinate scaling from display to original resolution. |
-| **Gate 2** | Benchmark Metric Definitions Correction | **PASS** | Separated accepted detections (0.0% recall, IoU N/A) from candidate-proposal diagnostics (37.7% IoU); documented simulation parameters for Approach D. |
-| **Gate 3** | Assisted Calibration UX Improvements | **PASS** | Added actionable validation warning banners and `reorderCalibrationPoints` ("Sort corners clockwise") action; preserved manual user control. |
-| **Gate 4** | Offline Real-Image Validation | **PASS** | Evaluated 385 FENiT real boards; benchmarked simulated touch perturbation against annotated corners; documented viewpoint disaggregation. |
-| **Gate 5** | Automated Verification | **PASS** | 187/187 Node tests pass; 17/17 Python tests pass; `tsc --noEmit` clean; coordinate and geometry unit tests verified. |
-| **Gate 6** | Acceptance and Publication | **PASS** | Mandatory manual calibration retained; Set 01 physical capture remains PENDING; documentation updated; committed and pushed to `origin/main`. |
+| **Gate 0** | Mandatory Preservation Constraints | **PASS** | 35 `dist/` files intact; `modules/live-camera/android/build/` untouched; production weights unchanged; no APK built or installed. |
+| **Gate 1** | Reconcile Approach B Metrics | **PASS** | Proven mathematically why accepted IoU is 55.7% ($N=273$) and proposal IoU is 39.5% ($N=385$ with 0 penalty for 112 failures); documented relaxed threshold bypass. |
+| **Gate 2** | Characterize Approach D Simulation | **PASS** | Formally characterized as Ground-Truth-Seeded Assisted Calibration Simulation; measured initial vs post-refinement error (3.71% $\to$ 3.10%) with median, P90, P95 distributions. |
+| **Gate 3** | Corner Ordering & Geometric Validation | **PASS** | Proved 24-permutation coordinate invariance; validated rejection of collinear, coincident, and bowtie quads; added "Sort corners clockwise" UX action. |
+| **Gate 4** | Coordinate & Aspect-Ratio Error Bounds | **PASS** | Proved display aspect-ratio quantization error is strictly bounded $< 0.35\%$; verified exact boundary scaling $[0.0, 1.0] \to [0, W]$. |
+| **Gate 5** | Regression Verification & Publication | **PASS** | 192/192 Node tests pass; 17/17 Python tests pass; `tsc --noEmit` clean; documentation updated; committed and pushed to `origin/main`. |
 
 ---
 
-## 7. Next Recommended Action & Readiness Recommendation
+## 7. Next Recommended Action
 
-With the calibration workflow audited, display-to-sensor coordinate scaling verified, benchmark metrics properly stratified, and actionable validation feedback integrated:
-- **Readiness Recommendation:** The assisted manual calibration workflow is verified, safe, and ready for physical on-device field testing.
+With geometry metrics reconciled, coordinate quantization bounds proven, 24-permutation invariance tested, and the assisted calibration UX hardened:
+- **Readiness Recommendation:** The assisted manual calibration workflow is mathematically robust, verified, and ready for physical on-device field testing.
 - **Next Technical Step:** Proceed to live physical capture preparation for Set 01 when physical hardware, studio lighting, underside tags, and tripod setup become available.

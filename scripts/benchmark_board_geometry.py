@@ -233,22 +233,13 @@ def detect_approach_c_hough_lines(img: np.ndarray) -> Tuple[Optional[np.ndarray]
     return order_corners_screen_space(pts), 0.20, "hough_min_area_rect_fallback"
 
 
-def detect_approach_d_assisted(
-    img: np.ndarray, gt_corners: np.ndarray, noise_std_diag: float = 0.03
+def refine_corners_locally(
+    img: np.ndarray, user_taps: np.ndarray
 ) -> Tuple[np.ndarray, float, str]:
-    """
-    Approach D: Assisted calibration workflow.
-    Simulates user tapping 4 corners with human noise (std dev = 3% of diagonal),
-    followed by local Shi-Tomasi / Harris corner refinement within a 5% window.
-    """
+    """Refines coarse corner taps using local Shi-Tomasi corner detection within a 5% diagonal window."""
     h_orig, w_orig = img.shape[:2]
     diag = math.sqrt(w_orig * w_orig + h_orig * h_orig)
 
-    # Simulated coarse human taps
-    noise = np.random.normal(0, noise_std_diag * diag, gt_corners.shape).astype(np.float32)
-    user_taps = gt_corners + noise
-
-    # Local corner snapping in grayscale image
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     win_size = int(round(0.05 * diag))
     refined_pts = []
@@ -275,6 +266,21 @@ def detect_approach_d_assisted(
     refined = np.array(refined_pts, dtype=np.float32)
     ordered = order_corners_screen_space(refined)
     return ordered, 0.85, "ok"
+
+
+def detect_approach_d_assisted(
+    img: np.ndarray, gt_corners: np.ndarray, noise_std_diag: float = 0.03
+) -> Tuple[np.ndarray, float, str]:
+    """
+    Approach D: Ground-truth-seeded assisted-calibration simulation.
+    Simulates user tapping 4 corners with human noise (std dev = 3% of diagonal),
+    followed by local Shi-Tomasi / Harris corner refinement within a 5% window.
+    """
+    h_orig, w_orig = img.shape[:2]
+    diag = math.sqrt(w_orig * w_orig + h_orig * h_orig)
+    noise = np.random.normal(0, noise_std_diag * diag, gt_corners.shape).astype(np.float32)
+    user_taps = gt_corners + noise
+    return refine_corners_locally(img, user_taps)
 
 
 def run_geometry_benchmark(
@@ -345,13 +351,24 @@ def run_geometry_benchmark(
             "iou": iou_c, "error": err_c, "reason": reason_c, "view": view_cat
         })
 
-        # Approach D (Assisted Calibration)
-        pts_d, conf_d, reason_d = detect_approach_d_assisted(img, gt_ordered)
-        iou_d = compute_polygon_iou(pts_d, gt_ordered, shape)
-        err_d = compute_normalized_corner_error(pts_d, gt_ordered, shape)
+        # Approach D (Ground-Truth-Seeded Assisted Calibration Simulation)
+        diag = math.sqrt(w_orig * w_orig + h_orig * h_orig)
+        noise = np.random.normal(0, 0.03 * diag, gt_ordered.shape).astype(np.float32)
+        user_taps = gt_ordered + noise
+        init_iou_d = compute_polygon_iou(user_taps, gt_ordered, shape)
+        init_err_d = compute_normalized_corner_error(user_taps, gt_ordered, shape)
+
+        pts_d, conf_d, reason_d = refine_corners_locally(img, user_taps)
+        is_convex_d = cv2.isContourConvex(np.int32(pts_d))
+        iou_d = compute_polygon_iou(pts_d, gt_ordered, shape) if is_convex_d else 0.0
+        err_d = compute_normalized_corner_error(pts_d, gt_ordered, shape) if is_convex_d else 1.0
+
         results_d.append({
-            "file": r["file"], "detected": True,
-            "iou": iou_d, "error": err_d, "reason": reason_d, "view": view_cat
+            "file": r["file"], "detected": is_convex_d,
+            "initial_iou": init_iou_d, "initial_error": init_err_d,
+            "iou": iou_d, "error": err_d,
+            "reason": "ok" if is_convex_d else "non_convex_after_refinement",
+            "view": view_cat,
         })
 
         if idx % 50 == 0 or idx == total_images:
@@ -418,6 +435,30 @@ def run_geometry_benchmark(
         }
 
         if is_simulated:
+            init_ious = [x["initial_iou"] for x in results]
+            init_errs = [x["initial_error"] for x in results]
+            ref_ious = [x["iou"] for x in results if x["detected"]]
+            ref_errs = [x["error"] for x in results if x["detected"]]
+
+            res["initial_perturbed_taps"] = {
+                "mean_iou_pct": round(float(np.mean(init_ious)) * 100, 2),
+                "median_iou_pct": round(float(np.median(init_ious)) * 100, 2),
+                "p90_iou_pct": round(float(np.percentile(init_ious, 90)) * 100, 2),
+                "mean_corner_error_pct": round(float(np.mean(init_errs)) * 100, 2),
+                "median_corner_error_pct": round(float(np.median(init_errs)) * 100, 2),
+                "p90_corner_error_pct": round(float(np.percentile(init_errs, 90)) * 100, 2),
+                "p95_corner_error_pct": round(float(np.percentile(init_errs, 95)) * 100, 2),
+            }
+            res["post_refinement_snapped_corners"] = {
+                "mean_iou_pct": round(float(np.mean(ref_ious)) * 100, 2) if ref_ious else 0.0,
+                "median_iou_pct": round(float(np.median(ref_ious)) * 100, 2) if ref_ious else 0.0,
+                "p90_iou_pct": round(float(np.percentile(ref_ious, 90)) * 100, 2) if ref_ious else 0.0,
+                "mean_corner_error_pct": round(float(np.mean(ref_errs)) * 100, 2) if ref_errs else 1.0,
+                "median_corner_error_pct": round(float(np.median(ref_errs)) * 100, 2) if ref_errs else 1.0,
+                "p90_corner_error_pct": round(float(np.percentile(ref_errs, 90)) * 100, 2) if ref_errs else 1.0,
+                "p95_corner_error_pct": round(float(np.percentile(ref_errs, 95)) * 100, 2) if ref_errs else 1.0,
+            }
+            res["invalid_or_rejected_quads_count"] = sum(1 for x in results if not x["detected"])
             res["simulation_disclosure"] = {
                 "is_synthetic_simulation": True,
                 "input_source": "FENiT ground-truth corner annotations with synthetic Gaussian touch perturbation",
@@ -524,7 +565,19 @@ def main() -> int:
     print("Approach A (Baseline):", summary["approach_a_production_baseline"]["failure_reasons"])
     print("Approach B (Multi-Scale):", summary["approach_b_multiscale_edge_hierarchy"]["failure_reasons"])
     print("Approach C (Hough Lines):", summary["approach_c_hough_line_clustering"]["failure_reasons"])
-    print("\n[DISCLOSURE: Approach D evaluates a synthetic touch perturbation simulation on FENiT annotations; not a measured human-operator device result.]")
+
+    app_d = summary["approach_d_simulated_assisted_calibration"]
+    if "initial_perturbed_taps" in app_d:
+        p_init = app_d["initial_perturbed_taps"]
+        p_ref = app_d["post_refinement_snapped_corners"]
+        print("\n--- Part 3: Ground-Truth-Seeded Assisted Calibration Simulation (Approach D) ---")
+        print(f"Total Evaluated: {app_d['total_tested']} boards (input: FENiT annotations + 3% diagonal Gaussian noise, seed 42)")
+        print(f"Initial Perturbed Taps: Mean IoU = {p_init['mean_iou_pct']:.2f}% (median: {p_init['median_iou_pct']:.2f}%, P90: {p_init['p90_iou_pct']:.2f}%)")
+        print(f"                        Mean Corner Error = {p_init['mean_corner_error_pct']:.2f}% (median: {p_init['median_corner_error_pct']:.2f}%, P90: {p_init['p90_corner_error_pct']:.2f}%, P95: {p_init['p95_corner_error_pct']:.2f}%)")
+        print(f"Post-Refinement Snapped: Mean IoU = {p_ref['mean_iou_pct']:.2f}% (median: {p_ref['median_iou_pct']:.2f}%, P90: {p_ref['p90_iou_pct']:.2f}%)")
+        print(f"                        Mean Corner Error = {p_ref['mean_corner_error_pct']:.2f}% (median: {p_ref['median_corner_error_pct']:.2f}%, P90: {p_ref['p90_corner_error_pct']:.2f}%, P95: {p_ref['p95_corner_error_pct']:.2f}%)")
+        print(f"Invalid / Rejected Refined Quads: {app_d.get('invalid_or_rejected_quads_count', 0)}/{app_d['total_tested']}")
+        print(f"[DISCLOSURE: This evaluates algorithm snapping on perturbed ground-truth; it is NOT measured human-operator device performance.]")
 
     return 0
 
