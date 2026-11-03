@@ -9,6 +9,64 @@ export const MIN_QUADRILATERAL_AREA_RATIO = 0.05;
 /** Scale-independent minimum turn sine for a strictly convex quadrilateral. */
 export const MIN_CONVEX_TURN_SINE = 1e-6;
 
+/**
+ * Clamps corner x/y into the image boundary (Milestone 5.4C).
+ *
+ * Detectors may propose corners 1-3 px outside the frame (rotated
+ * minimum-area rectangles, boundary strikes). Rejecting those proposals
+ * outright was the dominant false rejection on real imagery; clamping keeps
+ * the otherwise-valid board measurable and is safe for the homography
+ * because clamping is monotone in both axes.
+ */
+export function clampCornersToBounds(
+  points: DetectedCorner[],
+  size: VisionSize,
+): DetectedCorner[] {
+  return points.map((point) => ({
+    x: Math.min(Math.max(point.x, 0), size.width),
+    y: Math.min(Math.max(point.y, 0), size.height),
+  }));
+}
+
+/**
+ * Maximum corner displacement (px) a clamp is allowed to apply (Milestone 5.4D).
+ *
+ * Rationale: a clamp may absorb rounding/rotation overshoot from the contour
+ * proposal, but a candidate that needs more than `max(4 px, 2% of the shorter
+ * image side)` of modification is not being corrected - it is being invented,
+ * and the clamped quadrilateral would no longer describe the geometry that is
+ * actually in the image. 2% of the shorter side is well under half of a
+ * typical board square (a square spans roughly 1/8 of the board, and the
+ * board occupies a large fraction of the frame), so a tolerated clamp can
+ * never move a corner across a square boundary.
+ *
+ * The empirical clamp-distance distribution over the FENiT benchmark is
+ * reported in board_geometry_benchmark_a3_clamp_tolerance.json.
+ */
+export const MAX_CLAMP_RATIO = 0.02;
+export const MIN_CLAMP_TOLERANCE_PX = 4;
+
+export function maxClampTolerancePx(size: VisionSize): number {
+  return Math.max(
+    MIN_CLAMP_TOLERANCE_PX,
+    MAX_CLAMP_RATIO * Math.min(size.width, size.height),
+  );
+}
+
+/** Largest distance (px) any single corner would move under `clampCornersToBounds`. */
+export function measureCornerClampDistance(
+  points: DetectedCorner[],
+  size: VisionSize,
+): number {
+  let worst = 0;
+  for (const point of points) {
+    const clampedX = Math.min(Math.max(point.x, 0), size.width);
+    const clampedY = Math.min(Math.max(point.y, 0), size.height);
+    worst = Math.max(worst, Math.hypot(clampedX - point.x, clampedY - point.y));
+  }
+  return worst;
+}
+
 export function signedArea(points: DetectedCorner[]): number {
   if (points.length < 3) {
     return 0;

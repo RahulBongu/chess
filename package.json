@@ -44,7 +44,7 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types tests/chess.test.ts tests/calibration.test.ts tests/coordinates.test.ts tests/vision.test.ts tests/cameraAvailability.test.ts tests/boardEvidence.test.ts tests/grayscaleFrame.test.ts tests/studyImport.test.ts tests/engine.test.ts tests/chalEngine.test.ts tests/rectify.test.ts tests/classifySquare.test.ts tests/fenBuilder.test.ts tests/boardReview.test.ts tests/imageLifecycle.test.ts tests/navigationArchitecture.test.ts tests/classifyPiece.test.ts tests/manifestValidator.test.ts tests/cropExtractor.test.ts tests/perspectiveOverlay.test.ts tests/boardTracker.test.ts tests/moveRecognizer.test.ts tests/liveGuidance.test.ts tests/squareSampler.test.ts",
+    "test": "node --test --experimental-strip-types tests/chess.test.ts tests/calibration.test.ts tests/coordinates.test.ts tests/vision.test.ts tests/cameraAvailability.test.ts tests/boardEvidence.test.ts tests/grayscaleFrame.test.ts tests/studyImport.test.ts tests/engine.test.ts tests/chalEngine.test.ts tests/rectify.test.ts tests/classifySquare.test.ts tests/fenBuilder.test.ts tests/boardReview.test.ts tests/imageLifecycle.test.ts tests/navigationArchitecture.test.ts tests/classifyPiece.test.ts tests/manifestValidator.test.ts tests/cropExtractor.test.ts tests/perspectiveOverlay.test.ts tests/boardTracker.test.ts tests/moveRecognizer.test.ts tests/liveGuidance.test.ts tests/squareSampler.test.ts tests/cameraProjection.test.ts tests/detectorBounds.test.ts tests/motionTracker.test.ts",
     "test:python": "py -m unittest tests.test_capture_pipeline -v"
   },
   "private": true,

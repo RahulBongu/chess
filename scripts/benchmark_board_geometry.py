@@ -180,6 +180,42 @@ def is_strictly_convex(points: np.ndarray) -> bool:
     return True
 
 
+def clamp_points_to_bounds(points: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
+    """Clamps quad vertices into the image bounds (Milestone 5.4C).
+
+    Mirrors src/vision/boardDetection.ts clampCornersToBounds: detectors may
+    propose corners 1-3 px outside the frame (rotated minAreaRect). Clamping
+    them preserves otherwise-valid boards instead of rejecting them.
+    """
+    height, width = shape[:2]
+    clamped = np.asarray(points, dtype=np.float64).copy()
+    clamped[:, 0] = np.clip(clamped[:, 0], 0.0, float(width))
+    clamped[:, 1] = np.clip(clamped[:, 1], 0.0, float(height))
+    return clamped
+
+
+# Milestone 5.4D: a clamp may absorb contour/rotation overshoot, but a
+# candidate needing more than max(4 px, 2% of the shorter image side) of
+# modification is rejected rather than silently moved into frame. Mirrors
+# MAX_CLAMP_RATIO / MIN_CLAMP_TOLERANCE_PX in src/vision/boardDetection.ts.
+MAX_CLAMP_RATIO = 0.02
+MIN_CLAMP_TOLERANCE_PX = 4.0
+
+
+def max_clamp_tolerance_px(shape: Tuple[int, int]) -> float:
+    height, width = shape[:2]
+    return max(MIN_CLAMP_TOLERANCE_PX, MAX_CLAMP_RATIO * min(width, height))
+
+
+def measure_corner_clamp_distance(points: np.ndarray, shape: Tuple[int, int]) -> float:
+    """Largest distance (px) any single corner would move under clamping."""
+    height, width = shape[:2]
+    array = np.asarray(points, dtype=np.float64)
+    dx = np.clip(array[:, 0], 0.0, float(width)) - array[:, 0]
+    dy = np.clip(array[:, 1], 0.0, float(height)) - array[:, 1]
+    return float(np.max(np.hypot(dx, dy))) if array.size else 0.0
+
+
 def validate_quadrilateral(
     points: Optional[np.ndarray], shape: Tuple[int, int]
 ) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -572,6 +608,7 @@ def _empty_candidate(candidate_reason: str) -> Dict[str, Any]:
         "pattern": None,
         "sampling_scale": None,
         "pattern_skipped_reason": None,
+        "corner_clamp_px": 0.0,
     }
 
 
@@ -582,7 +619,35 @@ def _finish_candidate(
     processing_gray: Optional[np.ndarray],
     processing_points: Optional[np.ndarray],
     measure_pattern: bool = True,
+    clamp_to_bounds: bool = False,
 ) -> Dict[str, Any]:
+    clamp_px = 0.0
+    if clamp_to_bounds:
+        # Milestone 5.4C production detector behaviour: clamp proposed corners
+        # into the frame before structural validation instead of rejecting them.
+        # Milestone 5.4D: reject candidates whose clamp would exceed the
+        # documented tolerance instead of inventing in-frame geometry.
+        clamp_px = measure_corner_clamp_distance(points, shape)
+        if clamp_px > max_clamp_tolerance_px(shape):
+            return {
+                "points": None,
+                "candidate_generated": True,
+                "candidate_rejection_reason": None,
+                "geometry_valid": False,
+                "geometry_rejection_reason": "clamp_excessive",
+                "geometry_detail": (
+                    f"Clamping would move a corner {clamp_px:.2f}px, above the "
+                    f"{max_clamp_tolerance_px(shape):.2f}px tolerance."
+                ),
+                "approach_confidence": float(confidence),
+                "boundary_score": 0.0,
+                "combined_confidence": 0.0,
+                "pattern": None,
+                "sampling_scale": None,
+                "pattern_skipped_reason": None,
+                "corner_clamp_px": clamp_px,
+            }
+        points = clamp_points_to_bounds(points, shape)
     valid, reason, detail = validate_quadrilateral(points, shape)
     result: Dict[str, Any] = {
         "points": points,
@@ -597,6 +662,7 @@ def _finish_candidate(
         "pattern": None,
         "sampling_scale": None,
         "pattern_skipped_reason": None,
+        "corner_clamp_px": clamp_px,
     }
     if valid:
         result["boundary_score"] = float(score_candidate(points, shape))
@@ -622,7 +688,7 @@ def _finish_candidate(
 
 
 def detect_approach_a_baseline(
-    img: np.ndarray, max_candidates: int = 20
+    img: np.ndarray, max_candidates: int = 20, clamp_to_bounds: bool = False
 ) -> Dict[str, Any]:
     """
     Replicates the production detectBoard.ts pipeline: collect quadrilateral
@@ -683,7 +749,10 @@ def detect_approach_a_baseline(
     first_invalid: Optional[Dict[str, Any]] = None
     for _, processing_points in candidates[:max_candidates]:
         points = processing_points / scale
-        result = _finish_candidate(points, (h_orig, w_orig), 0.0, gray, processing_points)
+        result = _finish_candidate(
+            points, (h_orig, w_orig), 0.0, gray, processing_points,
+            clamp_to_bounds=clamp_to_bounds,
+        )
         result["approach_confidence"] = result["combined_confidence"]
         if not result["geometry_valid"]:
             if first_invalid is None:
@@ -946,6 +1015,7 @@ def _make_record(
         "pattern": result.get("pattern"),
         "sampling_scale": result.get("sampling_scale"),
         "pattern_skipped_reason": result.get("pattern_skipped_reason"),
+        "corner_clamp_px": float(result.get("corner_clamp_px") or 0.0),
     }
 
 

@@ -19,9 +19,12 @@ import { PATTERN_SAMPLING_SCALES, measureBoardPattern } from './boardEvidence';
 import type { GrayscaleImage, PatternEvidence } from './boardEvidence';
 import {
   MIN_DETECTION_CONFIDENCE,
+  clampCornersToBounds,
   combineDetectionConfidence,
   insetCorners,
   isConvexQuadrilateral,
+  maxClampTolerancePx,
+  measureCornerClampDistance,
   normalizePoints,
   reorderCorners,
   scoreCandidate,
@@ -174,12 +177,24 @@ export async function detectBoardFromMat(src: Mat): Promise<BoardDetectionResult
         }));
         const ordered = reorderCorners(points);
 
-        const geometry = validateCandidateGeometry(ordered, originalSize);
+        // Clamp the (possibly marginally out-of-frame) candidate into the
+        // image bounds instead of rejecting it outright. This is the
+        // dominant fix for the 5.3D "geometry_out_of_bounds" false
+        // rejections on real boards. Candidates that would need more than
+        // maxClampTolerancePx of modification are rejected instead: clamping
+        // must not invent geometry (Milestone 5.4D).
+        const clampDistance = measureCornerClampDistance(ordered, originalSize);
+        if (clampDistance > maxClampTolerancePx(originalSize)) {
+          continue;
+        }
+        const clamped = clampCornersToBounds(ordered, originalSize);
+
+        const geometry = validateCandidateGeometry(clamped, originalSize);
         if (!geometry.valid) {
           continue;
         }
 
-        const boundaryScore = scoreCandidate(ordered, originalSize);
+        const boundaryScore = scoreCandidate(clamped, originalSize);
         if (boundaryScore < MIN_DETECTION_CONFIDENCE * 0.5) {
           continue;
         }
@@ -218,7 +233,7 @@ export async function detectBoardFromMat(src: Mat): Promise<BoardDetectionResult
         }));
 
         candidates.push({
-          corners: ordered,
+          corners: clamped,
           boundaryScore,
           pattern: bestPattern,
           confidence,
@@ -226,7 +241,7 @@ export async function detectBoardFromMat(src: Mat): Promise<BoardDetectionResult
           samplingCorners,
         });
         diagnostics.push({
-          corners: ordered,
+          corners: clamped,
           samplingCorners,
           samplingScale: bestSamplingScale,
           boundaryScore,
@@ -311,9 +326,28 @@ export async function detectBoardFromGrayscaleFrame(
   if (!validation.ok) {
     return emptyResult({ width: Math.max(1, width || 1), height: Math.max(1, height || 1) }, validation.message);
   }
+  return detectBoardFromGrayscaleBuffer(validation.buffer, width, height);
+}
+
+/**
+ * Same pipeline as detectBoardFromGrayscaleFrame but consumes an already
+ * decoded Y-plane buffer, so callers that also need the pixels (the square
+ * sampler) avoid decoding the base64 payload twice per frame.
+ */
+export async function detectBoardFromGrayscaleBuffer(
+  buffer: Uint8Array,
+  width: number,
+  height: number,
+): Promise<BoardDetectionResult> {
+  if (!buffer || buffer.length !== width * height || width <= 0 || height <= 0) {
+    return emptyResult(
+      { width: Math.max(1, width || 1), height: Math.max(1, height || 1) },
+      `Grayscale buffer length ${buffer?.length ?? 0} does not match ${width}x${height}.`,
+    );
+  }
 
   // Raw single-channel pixels must use the buffer API, not createFromBase64.
-  const gray = Mat.createFromBuffer('uint8', height, width, 1, validation.buffer);
+  const gray = Mat.createFromBuffer('uint8', height, width, 1, buffer);
   const color = Mat.create(height, width, DataTypes.CV_8UC3);
   OpenCV.cvtColor(gray, color, ColorConversionCodes.COLOR_GRAY2BGR);
   gray.release();

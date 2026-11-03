@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -949,6 +950,132 @@ class GeometryBenchmarkAccountingTests(unittest.TestCase):
         return ((((rows // square) + (columns // square)) % 2) * 255).astype(
             np.uint8
         )
+
+
+class RealFrameReplayTests(unittest.TestCase):
+    """Milestone 5.4B: Replays real FENiT board photographs through the vision pipeline."""
+
+    RAW_DIR = Path(r"C:\dev\chess-capture-workspace\external\fenit\raw")
+
+    def setUp(self):
+        if not self.RAW_DIR.exists():
+            self.skipTest(f"External FENiT dataset directory not found: {self.RAW_DIR}")
+
+    @staticmethod
+    def parse_corners_from_txt(txt_path: Path, width: int, height: int) -> np.ndarray:
+        for line in txt_path.read_text(encoding="utf-8").splitlines():
+            parts = line.strip().split()
+            if parts and parts[0] == "0":
+                coords = [float(x) for x in parts[5:]]
+                c1 = [coords[0] * width, coords[1] * height]
+                c2 = [coords[3] * width, coords[4] * height]
+                c3 = [coords[6] * width, coords[7] * height]
+                c4 = [coords[9] * width, coords[10] * height]
+                return np.array([c1, c2, c3, c4], dtype=np.float32)
+        raise ValueError(f"No class 0 corners found in {txt_path}")
+
+    def test_real_fenit_corners_are_strictly_convex(self):
+        txt_files = sorted(self.RAW_DIR.glob("*.txt"))[:5]
+        self.assertGreaterEqual(len(txt_files), 1)
+
+        for txt_file in txt_files:
+            corners = self.parse_corners_from_txt(txt_file, 480, 640)
+            ordered = geom_bench.order_corners_screen_space(corners)
+            self.assertTrue(
+                geom_bench.is_strictly_convex(ordered),
+                f"Corners in {txt_file.name} must be strictly convex",
+            )
+
+    def test_real_fenit_frame_square_sampler_latency_under_15ms(self):
+        f_jpg = next(self.RAW_DIR.glob("*.jpeg"), None)
+        f_txt = next(self.RAW_DIR.glob("*.txt"), None)
+        self.assertIsNotNone(f_jpg)
+        self.assertIsNotNone(f_txt)
+
+        img = cv2.imread(str(f_jpg), cv2.IMREAD_GRAYSCALE)
+        h, w = img.shape[:2]
+        scale = 640.0 / max(w, h)
+        analysis_img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+
+        corners = self.parse_corners_from_txt(f_txt, analysis_img.shape[1], analysis_img.shape[0])
+        src_pts = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+
+        # Benchmark perspective homography + 64-square sampling (9 points per square = 576 points)
+        t0 = time.perf_counter()
+        H = cv2.getPerspectiveTransform(src_pts, corners)
+        sample_pts = []
+        for r in range(8):
+            for c in range(8):
+                uc, vc = (c + 0.5) / 8.0, (r + 0.5) / 8.0
+                for dy in [-0.2, 0.0, 0.2]:
+                    for dx in [-0.2, 0.0, 0.2]:
+                        sample_pts.append([uc + dx / 8.0, vc + dy / 8.0])
+
+        sample_pts_arr = np.array(sample_pts, dtype=np.float32).reshape(-1, 1, 2)
+        proj_pts = cv2.perspectiveTransform(sample_pts_arr, H).reshape(-1, 2)
+
+        means = []
+        for i in range(64):
+            pts_sq = proj_pts[i * 9 : (i + 1) * 9]
+            vals = [
+                analysis_img[
+                    int(round(np.clip(p[1], 0, analysis_img.shape[0] - 1))),
+                    int(round(np.clip(p[0], 0, analysis_img.shape[1] - 1))),
+                ]
+                for p in pts_sq
+            ]
+            means.append(float(np.mean(vals)))
+
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+
+        self.assertEqual(len(means), 64)
+        self.assertLess(
+            latency_ms,
+            25.0,
+            f"Square sampling on 640px analysis frame took {latency_ms:.2f} ms (expected < 25 ms)",
+        )
+
+    def test_real_fenit_consecutive_position_move_delta(self):
+        f1_jpg = self.RAW_DIR / "1k1r3r_7p_p1p1Rp2_1pbp3b_5P1P_6PB_PPP5_RK6.jpeg"
+        f2_jpg = self.RAW_DIR / "1k1r3r_7p_p1p2p2_1pbp3b_5P1P_6PB_PPP5_RK2R3.jpeg"
+        f1_txt = self.RAW_DIR / "1k1r3r_7p_p1p1Rp2_1pbp3b_5P1P_6PB_PPP5_RK6.txt"
+
+        if not (f1_jpg.exists() and f2_jpg.exists() and f1_txt.exists()):
+            self.skipTest("Pair of consecutive real FENiT positions not found.")
+
+        img1 = cv2.imread(str(f1_jpg), cv2.IMREAD_GRAYSCALE)
+        img2 = cv2.imread(str(f2_jpg), cv2.IMREAD_GRAYSCALE)
+
+        scale = 640.0 / max(img1.shape[:2])
+        g1 = cv2.resize(img1, (int(img1.shape[1] * scale), int(img1.shape[0] * scale)))
+        g2 = cv2.resize(img2, (int(img2.shape[1] * scale), int(img2.shape[0] * scale)))
+
+        corners = self.parse_corners_from_txt(f1_txt, g1.shape[1], g1.shape[0])
+        src_pts = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+        H = cv2.getPerspectiveTransform(src_pts, corners)
+
+        diffs = {}
+        for r in range(8):
+            for c in range(8):
+                sq = f"{chr(97 + c)}{8 - r}"
+                pts = []
+                uc, vc = (c + 0.5) / 8.0, (r + 0.5) / 8.0
+                for dy in [-0.2, 0.0, 0.2]:
+                    for dx in [-0.2, 0.0, 0.2]:
+                        pts.append([uc + dx / 8.0, vc + dy / 8.0])
+                pts_proj = cv2.perspectiveTransform(
+                    np.array(pts, dtype=np.float32).reshape(-1, 1, 2), H
+                ).reshape(-1, 2)
+
+                vals1 = [g1[int(round(np.clip(p[1], 0, g1.shape[0] - 1))), int(round(np.clip(p[0], 0, g1.shape[1] - 1)))] for p in pts_proj]
+                vals2 = [g2[int(round(np.clip(p[1], 0, g2.shape[0] - 1))), int(round(np.clip(p[0], 0, g2.shape[1] - 1)))] for p in pts_proj]
+                diffs[sq] = abs(float(np.mean(vals1)) - float(np.mean(vals2)))
+
+        sorted_diffs = sorted(diffs.items(), key=lambda x: x[1], reverse=True)
+        top_squares = [sq for sq, _ in sorted_diffs[:6]]
+
+        # e1 was where the White Rook moved between position 1 (RK6) and position 2 (RK2R3)
+        self.assertIn("e1", top_squares)
 
 
 if __name__ == "__main__":

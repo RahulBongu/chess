@@ -35,26 +35,37 @@ class LiveCameraView(
   private val onFrame by EventDispatcher()
   private val onPreviewReady by EventDispatcher()
   private val onAnalysisReady by EventDispatcher()
+  private val onTrackingFrame by EventDispatcher()
   private val onCameraBound by EventDispatcher()
   private val onCameraError by EventDispatcher()
 
   private val cameraExecutor = Executors.newSingleThreadExecutor()
+  private val trackingExecutor = Executors.newSingleThreadExecutor()
   private val analysisBusy = AtomicBoolean(false)
+  private val trackingBusy = AtomicBoolean(false)
   private val cameraReadyEmitted = AtomicBoolean(false)
   private val previewReadyEmitted = AtomicBoolean(false)
+  private val trackingReadyEmitted = AtomicBoolean(false)
 
   private var cameraProvider: ProcessCameraProvider? = null
   private var camera: Camera? = null
   private var imageAnalysis: ImageAnalysis? = null
+  private var trackingAnalysis: ImageAnalysis? = null
   private var previewStreamObserver: Observer<PreviewView.StreamState>? = null
 
   @Volatile
   private var lastFrameTimeMs = 0L
+  @Volatile
+  private var lastTrackingTimeMs = 0L
 
   @Volatile
   private var pendingStart = false
 
   private val frameIntervalMs = 250L
+  private val trackingIntervalMs = 80L
+  private var trackingEnabled = true
+  private var trackingTargetWidth = 160
+  private var trackingTargetHeight = 120
 
   init {
     previewView.setOnHierarchyChangeListener(object : ViewGroup.OnHierarchyChangeListener {
@@ -113,17 +124,47 @@ class LiveCameraView(
     analysisBusy.set(false)
   }
 
+  fun releaseTrackingFrame() {
+    trackingBusy.set(false)
+  }
+
   fun stopCamera() {
     cameraProvider?.unbindAll()
     cameraProvider = null
     camera = null
     imageAnalysis = null
+    trackingAnalysis = null
     analysisBusy.set(false)
+    trackingBusy.set(false)
     cameraReadyEmitted.set(false)
     previewReadyEmitted.set(false)
+    trackingReadyEmitted.set(false)
     previewStreamObserver?.let { previewView.previewStreamState.removeObserver(it) }
     previewStreamObserver = null
   }
+
+  var trackingEnabled: Boolean = true
+    set(value) {
+      field = value
+      if (!value) {
+        trackingAnalysis = null
+      }
+    }
+
+  var trackingTargetWidth: Int = 160
+    set(value) {
+      field = value.coerceAtLeast(80)
+    }
+
+  var trackingTargetHeight: Int = 120
+    set(value) {
+      field = value.coerceAtLeast(60)
+    }
+
+  var trackingIntervalMs: Long = 80L
+    set(value) {
+      field = value.coerceAtLeast(33L) // ~30 fps max
+    }
 
   private fun startCamera() {
     if (!active || cameraProvider != null || !isAttachedToWindow) {
@@ -240,10 +281,12 @@ class LiveCameraView(
             }
           }
           val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+          val rotationDegrees = imageProxy.imageInfo.rotationDegrees
           val payload = mapOf(
             "base64" to base64,
             "width" to outputWidth,
-            "height" to outputHeight
+            "height" to outputHeight,
+            "rotationDegrees" to rotationDegrees
           )
 
           android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -258,24 +301,99 @@ class LiveCameraView(
 
       imageAnalysis = analysis
 
-      try {
-        provider.unbindAll()
-        camera = if (analysis != null) {
-          provider.bindToLifecycle(
-            lifecycleOwner,
-            CameraSelector.DEFAULT_BACK_CAMERA,
-            preview,
-            analysis
+      // High-rate lightweight tracking analysis (lower resolution, higher fps)
+      val trackingAnalysis = if (trackingEnabled) {
+        ImageAnalysis.Builder()
+          .setTargetResolution(Size(trackingTargetWidth, trackingTargetHeight))
+          .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+          .build()
+      } else {
+        null
+      }
+
+      trackingAnalysis?.setAnalyzer(trackingExecutor) { imageProxy ->
+        try {
+          val now = System.currentTimeMillis()
+          if (trackingBusy.get() || now - lastTrackingTimeMs < trackingIntervalMs) {
+            return@setAnalyzer
+          }
+          lastTrackingTimeMs = now
+
+          val plane = imageProxy.planes.firstOrNull() ?: return@setAnalyzer
+
+          val sourceWidth = imageProxy.width
+          val sourceHeight = imageProxy.height
+          val rowStride = plane.rowStride
+          val pixelStride = plane.pixelStride
+
+          val cropRect = imageProxy.cropRect
+          val cropLeft = if (cropRect.width() > 0) cropRect.left else 0
+          val cropTop = if (cropRect.height() > 0) cropRect.top else 0
+          val cropWidth = if (cropRect.width() > 0) cropRect.width() else sourceWidth
+          val cropHeight = if (cropRect.height() > 0) cropRect.height() else sourceHeight
+
+          // Downsample to tracking target resolution (e.g., 160x120)
+          val scale = minOf(
+            trackingTargetWidth.toFloat() / cropWidth.toFloat(),
+            trackingTargetHeight.toFloat() / cropHeight.toFloat()
           )
-        } else {
-          provider.bindToLifecycle(
-            lifecycleOwner,
-            CameraSelector.DEFAULT_BACK_CAMERA,
-            preview
+          val outputWidth = maxOf(1, (cropWidth.toFloat() * scale).toInt())
+          val outputHeight = maxOf(1, (cropHeight.toFloat() * scale).toInt())
+
+          val bytes = ByteArray(outputWidth * outputHeight)
+
+          val buffer = plane.buffer
+          buffer.rewind()
+          val bufferLimit = buffer.limit()
+          for (outY in 0 until outputHeight) {
+            val srcY = (cropTop + (outY * cropHeight) / outputHeight).coerceIn(0, sourceHeight - 1)
+            val rowBase = srcY * rowStride
+            for (outX in 0 until outputWidth) {
+              val srcX = (cropLeft + (outX * cropWidth) / outputWidth).coerceIn(0, sourceWidth - 1)
+              val position = rowBase + srcX * pixelStride
+              bytes[outY * outputWidth + outX] =
+                if (position in 0 until bufferLimit) buffer.get(position) else 0
+            }
+          }
+
+          trackingBusy.set(true)
+          if (trackingReadyEmitted.compareAndSet(false, true)) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+              onAnalysisReady(mapOf("width" to outputWidth, "height" to outputHeight, "stream" to "tracking"))
+            }
+          }
+          val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+          val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+          val payload = mapOf(
+            "base64" to base64,
+            "width" to outputWidth,
+            "height" to outputHeight,
+            "rotationDegrees" to rotationDegrees,
+            "stream" to "tracking"
           )
+
+          android.os.Handler(android.os.Looper.getMainLooper()).post {
+            onTrackingFrame(payload)
+          }
+        } catch (_: Exception) {
+        } finally {
+          imageProxy.close()
         }
+      }
+
+      this.trackingAnalysis = trackingAnalysis
+
+      try {
+        val useCases = mutableListOf<Any>(preview)
+        if (analysis != null) useCases.add(analysis)
+        if (trackingAnalysis != null) useCases.add(trackingAnalysis)
+        camera = provider.bindToLifecycle(
+          lifecycleOwner,
+          CameraSelector.DEFAULT_BACK_CAMERA,
+          *useCases.toTypedArray()
+        )
         android.os.Handler(android.os.Looper.getMainLooper()).post {
-          onCameraBound(mapOf("analysisEnabled" to analysisEnabled))
+          onCameraBound(mapOf("analysisEnabled" to analysisEnabled, "trackingEnabled" to trackingEnabled))
         }
       } catch (error: Exception) {
         stopCamera()
