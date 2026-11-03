@@ -28,12 +28,14 @@ import {
 } from './perspectiveOverlay.ts';
 import { createDefaultEngine, type EngineSelection } from '../chess/engineSelection.ts';
 import type { ChessEngine, EngineAnalysisResult } from '../chess/engine.ts';
+import { STARTING_FEN } from '../chess/ChessGame.ts';
 import {
   averageSquareObservations,
   observationsFromFen,
   recognizePositionFromObservations,
   suggestPositionFromObservations,
   summarizeSquareEvidence,
+  verifyStartingPosition,
   type DiagnosticSquareDetail,
 } from './pieceRecognition.ts';
 
@@ -108,6 +110,7 @@ export interface LiveGuidanceModel {
   pendingPromotion: PendingPromotion | null;
   /** Piece-aware board adoption and classifier telemetry. */
   positionConfirmed: boolean;
+  initializationMode: 'standard_start' | 'arbitrary_position';
   recognition: LiveRecognitionState;
   /** Stage timings for this frame (JS pipeline only). */
   stageTimings: LiveStageTimings;
@@ -129,6 +132,13 @@ export interface LiveGuidanceOptions {
   engine?: ChessEngine;
   initialFen?: string;
   initialTurn?: 'w' | 'b';
+  /**
+   * Initialisation strategy:
+   * - 'standard_start' (default): verifies 32-piece initial setup with empty center;
+   *   adopts the verified starting FEN safely without per-square piece errors.
+   * - 'arbitrary_position': full 13-class per-square recognition for midgames/endgames.
+   */
+  initializationMode?: 'standard_start' | 'arbitrary_position';
   /**
    * Production live camera sets this true: engine analysis and move
    * recognition stay disabled until the 13-class model produces a legal,
@@ -164,6 +174,7 @@ export class LiveGuidanceCoordinator {
   private readonly requirePositionEvidence: boolean;
   private readonly adoptionWindow: number;
   private readonly adoptionConfirmations: number;
+  private initializationMode: 'standard_start' | 'arbitrary_position';
   private adoptionFrames: SquareObservation[][] = [];
   private turnHint: 'w' | 'b';
   private positionConfirmed: boolean;
@@ -187,6 +198,7 @@ export class LiveGuidanceCoordinator {
     this.tracker = new BoardTracker();
     this.recognizer = new MoveRecognizer({ initialFen: options.initialFen });
     this.requirePositionEvidence = options.requirePositionEvidence ?? false;
+    this.initializationMode = options.initializationMode ?? 'standard_start';
     this.adoptionWindow = Math.max(
       1,
       Math.floor(options.adoptionWindow ?? (this.requirePositionEvidence ? 4 : 1)),
@@ -225,6 +237,19 @@ export class LiveGuidanceCoordinator {
 
   isPositionConfirmed(): boolean {
     return this.positionConfirmed;
+  }
+
+  setInitializationMode(mode: 'standard_start' | 'arbitrary_position'): void {
+    if (this.initializationMode !== mode) {
+      this.initializationMode = mode;
+      if (!this.positionConfirmed) {
+        this.clearAdoptionEvidence();
+      }
+    }
+  }
+
+  getInitializationMode(): 'standard_start' | 'arbitrary_position' {
+    return this.initializationMode;
   }
 
   /** Records native inference and crop preparation latency without changing board state. */
@@ -379,18 +404,47 @@ export class LiveGuidanceCoordinator {
 
             if (averaged) {
               this.updateRecognitionSummary(averaged);
-              const candidate = recognizePositionFromObservations(averaged, {
-                turn: this.turnHint,
-              });
-              const suggestion = candidate.ok
-                ? candidate
-                : suggestPositionFromObservations(averaged, { turn: this.turnHint });
-              this.suggestedFen = suggestion.ok ? suggestion.fen : null;
-              if (candidate.ok) {
-                if (this.adoptionCandidateFen === candidate.fen) {
+
+              let adoptedCandidateFen: string | null = null;
+              let rejectionReason: string | null = null;
+
+              if (this.initializationMode === 'standard_start') {
+                const startCheck = verifyStartingPosition(averaged, this.orientation);
+                if (startCheck.ok) {
+                  adoptedCandidateFen = STARTING_FEN;
+                  this.suggestedFen = STARTING_FEN;
+                } else {
+                  // Fall back to scanning candidate for suggestion
+                  const candidate = recognizePositionFromObservations(averaged, {
+                    turn: this.turnHint,
+                  });
+                  const suggestion = candidate.ok
+                    ? candidate
+                    : suggestPositionFromObservations(averaged, { turn: this.turnHint });
+                  this.suggestedFen = suggestion.ok ? suggestion.fen : null;
+                  rejectionReason = startCheck.reason;
+                }
+              } else {
+                const candidate = recognizePositionFromObservations(averaged, {
+                  turn: this.turnHint,
+                  maxUncertainSquares: 0,
+                });
+                const suggestion = candidate.ok
+                  ? candidate
+                  : suggestPositionFromObservations(averaged, { turn: this.turnHint });
+                this.suggestedFen = suggestion.ok ? suggestion.fen : null;
+                if (candidate.ok) {
+                  adoptedCandidateFen = candidate.fen;
+                } else {
+                  rejectionReason = candidate.reason;
+                }
+              }
+
+              if (adoptedCandidateFen) {
+                if (this.adoptionCandidateFen === adoptedCandidateFen) {
                   this.adoptionStreak += 1;
                 } else {
-                  this.adoptionCandidateFen = candidate.fen;
+                  this.adoptionCandidateFen = adoptedCandidateFen;
                   this.adoptionStreak = 1;
                 }
                 this.recognitionReason =
@@ -399,7 +453,7 @@ export class LiveGuidanceCoordinator {
                   // Seed the baseline from the accepted FEN, not from the noisy
                   // frame that produced it. Delta tracking must compare future
                   // frames against the believed position.
-                  if (this.recognizer.adoptPosition(candidate.fen)) {
+                  if (this.recognizer.adoptPosition(adoptedCandidateFen)) {
                     this.positionConfirmed = true;
                     this.clearAdoptionEvidence();
                     this.recognitionReason = null;
@@ -412,7 +466,7 @@ export class LiveGuidanceCoordinator {
               } else {
                 this.adoptionStreak = 0;
                 this.adoptionCandidateFen = null;
-                this.recognitionReason = candidate.reason;
+                this.recognitionReason = rejectionReason;
               }
             } else {
               this.updateRecognitionSummary(observations);
@@ -572,6 +626,7 @@ export class LiveGuidanceCoordinator {
       isEngineAnalyzing: this.isAnalyzing,
       pendingPromotion: this.recognizer.getPendingPromotion(),
       positionConfirmed: this.positionConfirmed,
+      initializationMode: this.initializationMode,
       recognition: {
         positionConfirmed: this.positionConfirmed,
         adoptionStreak: this.adoptionStreak,

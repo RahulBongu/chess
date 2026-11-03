@@ -1024,6 +1024,25 @@ export default function LiveGameScreen() {
             </Text>
           </Pressable>
 
+          {active && !guidance?.positionConfirmed ? (
+            <Pressable
+              style={styles.utilityButton}
+              onPress={() => {
+                const current = coordinatorRef.current?.getInitializationMode() ?? 'standard_start';
+                const nextMode = current === 'standard_start' ? 'arbitrary_position' : 'standard_start';
+                coordinatorRef.current?.setInitializationMode(nextMode);
+                setStatus(
+                  nextMode === 'standard_start'
+                    ? 'Mode: Standard Start. Verifying 32-piece initial arrangement.'
+                    : 'Mode: Custom Position. Verifying all squares, or tap Set Position to edit.',
+                );
+              }}>
+              <Text style={styles.utilityButtonText}>
+                {guidance?.initializationMode === 'standard_start' ? 'Standard Start' : 'Custom Board'}
+              </Text>
+            </Pressable>
+          ) : null}
+
           {active ? (
             <Pressable style={styles.utilityButton} onPress={handleEditPosition}>
               <Text style={styles.utilityButtonText}>Set Position</Text>
@@ -1136,7 +1155,8 @@ export default function LiveGameScreen() {
               : '—'}
           </Text>
           <Text style={styles.telemetryText}>
-            Position: {guidance?.positionConfirmed ? 'CONFIRMED' : 'UNVERIFIED'} · evidence{' '}
+            Mode: {guidance?.initializationMode === 'standard_start' ? 'STANDARD START' : 'CUSTOM BOARD'} · Position:{' '}
+            {guidance?.positionConfirmed ? 'CONFIRMED' : 'UNVERIFIED'} · evidence{' '}
             {guidance?.recognition.adoptionFrames ?? 0}/
             {guidance?.recognition.adoptionWindow ?? 4} · adopt{' '}
             {guidance?.recognition.adoptionStreak ?? 0}/

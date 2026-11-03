@@ -7,7 +7,7 @@
  * probabilities rather than against luminance changes.
  */
 
-import { ChessGame, type ChessSquare, type PromotionPiece } from '../chess/ChessGame.ts';
+import { ChessGame, STARTING_FEN, type ChessSquare, type PromotionPiece } from '../chess/ChessGame.ts';
 import type { PieceType } from './types.ts';
 import type { SquareObservation } from './moveRecognizer.ts';
 import { colRowToAlgebraic, type BoardOrientation } from './perspectiveOverlay.ts';
@@ -428,6 +428,133 @@ function squareName(file: number, rank: number): ChessSquare {
   return `${String.fromCharCode(97 + file)}${rank}` as ChessSquare;
 }
 
+export interface StartingPositionVerification {
+  ok: boolean;
+  fen: string;
+  reason: string | null;
+  matchingSquares: number;
+  whiteHomeCount: number;
+  blackHomeCount: number;
+  centerOccupiedCount: number;
+  totalOccupied: number;
+}
+
+/**
+ * Conclusively verifies whether the observed board matches the standard 32-piece
+ * chess starting position without relying on brittle minor-piece type classification.
+ *
+ * Uses robust occupancy and piece-color evidence:
+ * - Ranks 1 and 2: White pieces (>= 14/16)
+ * - Ranks 7 and 8: Black pieces (>= 14/16)
+ * - Ranks 3, 4, 5, 6: Completely empty (centerOccupied <= 1)
+ * - Zero inverted-color pieces on home ranks
+ * - Total occupied count between 28 and 32 pieces
+ */
+export function verifyStartingPosition(
+  observations: SquareObservation[],
+  orientation: BoardOrientation = 'white_bottom',
+): StartingPositionVerification {
+  if (observations.length !== 64) {
+    return {
+      ok: false,
+      fen: '',
+      reason: `Expected 64 square observations, got ${observations.length}`,
+      matchingSquares: 0,
+      whiteHomeCount: 0,
+      blackHomeCount: 0,
+      centerOccupiedCount: 0,
+      totalOccupied: 0,
+    };
+  }
+
+  let whiteHomeCount = 0;
+  let blackHomeCount = 0;
+  let centerEmptyCount = 0;
+  let centerOccupiedCount = 0;
+  let wrongColorHomeErrors = 0;
+  let totalOccupied = 0;
+  let matchingSquares = 0;
+
+  for (const obs of observations) {
+    const { rank } = squareFileRank(obs.square);
+    const top = obs.classProbabilities
+      ? classProbabilitiesToTop(obs.classProbabilities)
+      : null;
+    const pieceClass = top ? PIECE_CLASSES[top.index] : 'empty';
+
+    const isWhite = pieceClass.startsWith('white_') || obs.color === 'w';
+    const isBlack = pieceClass.startsWith('black_') || obs.color === 'b';
+    const isEmpty = pieceClass === 'empty' && !obs.occupied;
+
+    if (!isEmpty) {
+      totalOccupied += 1;
+    }
+
+    if (rank === 1 || rank === 2) {
+      // Expected White home ranks
+      if (isWhite) {
+        whiteHomeCount += 1;
+        matchingSquares += 1;
+      } else if (isBlack) {
+        wrongColorHomeErrors += 1;
+      }
+    } else if (rank === 7 || rank === 8) {
+      // Expected Black home ranks
+      if (isBlack) {
+        blackHomeCount += 1;
+        matchingSquares += 1;
+      } else if (isWhite) {
+        wrongColorHomeErrors += 1;
+      }
+    } else {
+      // Central empty ranks: 3, 4, 5, 6 (32 squares)
+      if (isEmpty) {
+        centerEmptyCount += 1;
+        matchingSquares += 1;
+      } else {
+        centerOccupiedCount += 1;
+      }
+    }
+  }
+
+  const ok =
+    centerOccupiedCount <= 1 &&
+    whiteHomeCount >= 14 &&
+    blackHomeCount >= 14 &&
+    wrongColorHomeErrors === 0 &&
+    totalOccupied >= 28 &&
+    totalOccupied <= 32 &&
+    matchingSquares >= 56;
+
+  let reason: string | null = null;
+  if (!ok) {
+    if (centerOccupiedCount > 1) {
+      reason = `Pieces detected in center (${centerOccupiedCount} squares in ranks 3-6); not a starting position.`;
+    } else if (wrongColorHomeErrors > 0) {
+      reason = `Inverted piece color detected on home rank (${wrongColorHomeErrors} pieces). Check White/Black bottom toggle.`;
+    } else if (whiteHomeCount < 14) {
+      reason = `White home ranks (1-2) have only ${whiteHomeCount}/16 pieces detected.`;
+    } else if (blackHomeCount < 14) {
+      reason = `Black home ranks (7-8) have only ${blackHomeCount}/16 pieces detected.`;
+    } else if (totalOccupied < 28 || totalOccupied > 32) {
+      reason = `Detected piece count is ${totalOccupied}/32; not the standard starting setup.`;
+    } else {
+      reason = `Board layout matches ${matchingSquares}/64 starting squares.`;
+    }
+  }
+
+  return {
+    ok,
+    fen: ok ? STARTING_FEN : '',
+    reason,
+    matchingSquares,
+    whiteHomeCount,
+    blackHomeCount,
+    centerOccupiedCount,
+    totalOccupied,
+  };
+}
+
 export interface RecognizedPosition {
   ok: boolean;
   fen: string;
@@ -481,7 +608,7 @@ export function recognizePositionFromObservations(
 ): RecognizedPosition {
   const minPieceProbability = options.minPieceProbability ?? 0.34;
   const minPieceMargin = options.minPieceMargin ?? 0.06;
-  const maxUncertainSquares = options.maxUncertainSquares ?? 3;
+  const maxUncertainSquares = options.maxUncertainSquares ?? 0;
   const turn = options.turn ?? 'w';
 
   const bySquare = new Map<ChessSquare, SquareObservation>();
