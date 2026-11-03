@@ -133,7 +133,7 @@ The table below establishes the frozen external benchmark baseline for AI Chess 
 | **Orientation Agreement (Unique Strict)** | Mode 2 vs Mode 1 | 254 / 385 boards | **65.97%** | Boards where screen-space orientation ($h=0$) is the sole, unambiguous winner. |
 | **Orientation Agreement (Optimal / Tied)** | Mode 2 vs Mode 1 | 274 / 385 boards | **71.17%** | Boards where screen-space orientation ($h=0$) achieves maximal score (includes 20 tied boards). |
 | **Board-Level Exact Placement (100%)** | Mode 1 (Oracle) | 75 / 385 boards | **19.48%** | Boards where 100% of YOLO piece boxes landed on the correct FEN square under oracle rotation. |
-| **Autonomous Board Detection** | Mode 3 (End-to-End) | 0 / 385 boards | **0.00%** | Classical contour detection fails on uncalibrated oblique tile-floor scenes. App uses manual calibration. |
+| **Autonomous Board Detection** | Mode 3 (End-to-End) | 9 / 385 boards | **2.34%** | Production structural checks plus checkerboard evidence and the combined-confidence gate measured in Milestone 5.3D. 376 still fail; autonomous use is not supported and manual calibration remains production. |
 | **Piece Classifier Overall Accuracy** | Real Perspective (FENiT) | 583 / 5,302 squares | **11.00%** | Deployed synthetic Staunton HOG model on real oblique crops. |
 | **Piece Classifier Coverage** | Production Thresholds | 3,599 / 5,302 squares | **67.88%** | Passed confidence ($\ge 0.60$) and margin ($\ge 0.20$) thresholds. |
 | **Piece Classifier Abstention Rate** | Production Thresholds | 1,703 / 5,302 squares | **32.12%** | Flagged as uncertain for human review. |

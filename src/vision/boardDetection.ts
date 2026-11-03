@@ -6,6 +6,8 @@ import type { DetectedCorner, VisionSize } from './types';
 export const MIN_DETECTION_CONFIDENCE = 0.32;
 export const MIN_CANDIDATE_AREA_RATIO = 0.08;
 export const MIN_QUADRILATERAL_AREA_RATIO = 0.05;
+/** Scale-independent minimum turn sine for a strictly convex quadrilateral. */
+export const MIN_CONVEX_TURN_SINE = 1e-6;
 
 export function signedArea(points: DetectedCorner[]): number {
   if (points.length < 3) {
@@ -58,20 +60,42 @@ export function isConvexQuadrilateral(points: DetectedCorner[]): boolean {
   if (points.length !== 4) {
     return false;
   }
+  if (!points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) {
+    return false;
+  }
 
   const ordered = reorderCorners(points);
-  const crosses: number[] = [];
+  let turnSign = 0;
   for (let index = 0; index < 4; index += 1) {
     const a = ordered[index];
     const b = ordered[(index + 1) % 4];
     const c = ordered[(index + 2) % 4];
-    const cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    crosses.push(cross);
+
+    const firstX = b.x - a.x;
+    const firstY = b.y - a.y;
+    const secondX = c.x - b.x;
+    const secondY = c.y - b.y;
+    const firstLength = Math.hypot(firstX, firstY);
+    const secondLength = Math.hypot(secondX, secondY);
+    if (firstLength < 1e-12 || secondLength < 1e-12) {
+      return false;
+    }
+
+    const cross = firstX * secondY - firstY * secondX;
+    const turnSine = cross / (firstLength * secondLength);
+    if (Math.abs(turnSine) < MIN_CONVEX_TURN_SINE) {
+      return false;
+    }
+
+    const currentSign = Math.sign(turnSine);
+    if (turnSign === 0) {
+      turnSign = currentSign;
+    } else if (currentSign !== turnSign) {
+      return false;
+    }
   }
 
-  const hasPositive = crosses.some((value) => value > 1e-9);
-  const hasNegative = crosses.some((value) => value < -1e-9);
-  return hasPositive !== hasNegative;
+  return true;
 }
 
 export function quadrilateralArea(points: DetectedCorner[]): number {

@@ -834,7 +834,8 @@ def main() -> int:
         print(f"  [DISCLOSURE: Reconciles 5.2J (71.17% optimal/tied) vs 5.2K (65.97% unique strict). Drops { (avg_mode1 - avg_mode2)*100:.2f} pp from oracle.]")
         print(f"\nMode 3 (End-to-End Autonomous Pipeline):")
         print(f"  Autonomous Raw Board Detection:    Requires deep-learning pose keypoints or manual calibration.")
-        print(f"  Classical Contour Detection:       0% on oblique tile-floor scenes (over 100k grout/glare contours).")
+        print(f"  Classical Contour Detection:       Not sufficient for autonomous use; see")
+        print(f"                                     docs/BOARD_GEOMETRY_AND_CALIBRATION_BENCHMARK.md for explicit per-image accounting.")
 
         print("\n--- Deployed Piece Classifier Statistics (src/vision/pieceModelWeights.ts) ---")
         print(f"Total Occupied Squares Evaluated:   {total_pieces_eval}")

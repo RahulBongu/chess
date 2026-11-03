@@ -14,6 +14,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { deleteCachedCapture } from '@/vision/imageLifecycle';
+import {
+  isNormalizedCornerSet,
+  normalizedToPixelCorners,
+} from '@/calibration';
 
 import {
   buildPositionFen,
@@ -181,13 +185,10 @@ export default function BoardReviewScreen() {
           src = Mat.createFromBase64(base64);
 
           // Support both normalized [0, 1] coordinates and pixel coordinates
-          const isNormalized = parsedCorners.every(
-            (pt) => pt.x >= 0 && pt.x <= 1.05 && pt.y >= 0 && pt.y <= 1.05,
-          );
-          const pixelCorners: DetectedCorner[] = parsedCorners.map((pt) => ({
-            x: isNormalized ? pt.x * src.cols : pt.x,
-            y: isNormalized ? pt.y * src.rows : pt.y,
-          }));
+          const isNormalized = isNormalizedCornerSet(parsedCorners);
+          const pixelCorners: DetectedCorner[] = isNormalized
+            ? normalizedToPixelCorners(parsedCorners, src.cols, src.rows)
+            : parsedCorners;
 
           const { rectified, release } = rectifyMat(src, pixelCorners, 800);
           releaseRectified = release;
@@ -262,6 +263,18 @@ export default function BoardReviewScreen() {
 
   const boardSize = Math.min(width - 24, 380);
   const cellSize = boardSize / 8;
+
+  const attachedCorners = useMemo(() => {
+    if (!params.corners) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(params.corners);
+      return Array.isArray(parsed) && parsed.length === 4 ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [params.corners]);
 
   // Build castling flags
   const castlingFlags = useMemo(
@@ -409,6 +422,25 @@ export default function BoardReviewScreen() {
             </Text>
           </View>
         )}
+
+        {attachedImageUri && attachedCorners ? (
+          <View style={styles.mappingCard}>
+            <Text style={styles.mappingHeader}>Calibration corner mapping</Text>
+            <Text style={styles.mappingText}>
+              Corner order is clockwise from the screen top-left: 1 Top-left, 2 Top-right,
+              3 Bottom-right, 4 Bottom-left.
+            </Text>
+            <Text style={styles.mappingText}>
+              {orientation === 'white-bottom'
+                ? 'White at bottom maps 1 → a8, 2 → h8, 3 → h1, 4 → a1.'
+                : 'Black at bottom maps 1 → h1, 2 → a1, 3 → a8, 4 → h8.'}
+            </Text>
+            <Text style={styles.mappingWarning}>
+              Cyclic ordering cannot prove which physical side is White. If these mappings are
+              wrong, switch the view or re-capture the corners before confirming squares.
+            </Text>
+          </View>
+        ) : null}
 
         {/* Synthetic Model Disclosure & Status Banner */}
         {attachedImageUri ? (
@@ -742,6 +774,18 @@ const styles = StyleSheet.create({
     borderColor: '#BEE3F8',
     alignItems: 'center',
   },
+  mappingCard: {
+    width: '100%',
+    backgroundColor: '#F0F4F8',
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BCCCDC',
+    gap: 3,
+  },
+  mappingHeader: { fontSize: 12, fontWeight: '700', color: '#102A43' },
+  mappingText: { fontSize: 11, color: '#334E68' },
+  mappingWarning: { fontSize: 11, color: '#92400E' },
   manualHeader: { fontSize: 14, fontWeight: '700', color: '#2B6CB0' },
   manualText: { fontSize: 12, color: '#4A5568', textAlign: 'center', marginTop: 2 },
   controlsRow: {

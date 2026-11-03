@@ -23,6 +23,16 @@ export const MIN_POINT_SEPARATION = 0.05;
 export const MIN_POINT_SEPARATION_SQUARED = MIN_POINT_SEPARATION * MIN_POINT_SEPARATION;
 export const MIN_QUADRILATERAL_AREA = 0.02;
 
+/**
+ * Minimum absolute sine of the turn angle at every vertex of a convex
+ * quadrilateral. Normalized screen coordinates are in [0, 1], so this is a
+ * scale-independent tolerance: a vertex whose turn is shallower than roughly
+ * 0.000057 degrees is treated as collinear. This rejects nearly-collinear and
+ * degenerate selections without being sensitive to ordinary floating-point
+ * noise (which is many orders of magnitude smaller).
+ */
+export const MIN_CONVEX_TURN_SINE = 1e-6;
+
 function isFiniteNumber(value: number): boolean {
   return Number.isFinite(value);
 }
@@ -92,6 +102,58 @@ export function signedArea(points: NormalizedPoint[]): number {
     sum += current.x * next.y - next.x * current.y;
   }
   return sum / 2;
+}
+
+/**
+ * Returns true when the four points form a strictly convex quadrilateral in
+ * their supplied order. The test is orientation-agnostic: clockwise and
+ * counter-clockwise convex quads both return true. Concave, collinear,
+ * repeated-point, and self-intersecting selections return false.
+ *
+ * Each consecutive turn is measured by the sine of its turn angle, not by an
+ * absolute cross product. That keeps the tolerance meaningful for normalized
+ * coordinates regardless of edge length.
+ */
+export function isConvexQuadrilateral(points: NormalizedPoint[]): boolean {
+  if (points.length !== 4) {
+    return false;
+  }
+  if (!points.every((point) => isFiniteNumber(point.x) && isFiniteNumber(point.y))) {
+    return false;
+  }
+
+  let turnSign = 0;
+  for (let index = 0; index < 4; index += 1) {
+    const a = points[index];
+    const b = points[(index + 1) % 4];
+    const c = points[(index + 2) % 4];
+
+    const firstX = b.x - a.x;
+    const firstY = b.y - a.y;
+    const secondX = c.x - b.x;
+    const secondY = c.y - b.y;
+    const firstLength = Math.hypot(firstX, firstY);
+    const secondLength = Math.hypot(secondX, secondY);
+
+    if (firstLength < 1e-12 || secondLength < 1e-12) {
+      return false;
+    }
+
+    const cross = firstX * secondY - firstY * secondX;
+    const turnSine = cross / (firstLength * secondLength);
+    if (Math.abs(turnSine) < MIN_CONVEX_TURN_SINE) {
+      return false;
+    }
+
+    const currentSign = Math.sign(turnSine);
+    if (turnSign === 0) {
+      turnSign = currentSign;
+    } else if (currentSign !== turnSign) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function canAddCalibrationPoint(
@@ -193,6 +255,14 @@ export function isValidCalibration(points: NormalizedPoint[]): CalibrationValida
   const area = Math.abs(signedArea(points));
   if (area < MIN_QUADRILATERAL_AREA) {
     return { valid: false, reason: 'The selected corners do not enclose enough of the preview.' };
+  }
+
+  if (!isConvexQuadrilateral(points)) {
+    return {
+      valid: false,
+      reason:
+        'The selected corners form a concave or nearly collinear quadrilateral. Re-select the four outer corners of the board.',
+    };
   }
 
   if (signedArea(points) <= 0) {

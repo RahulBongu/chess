@@ -22,7 +22,9 @@ import {
   NormalizedPoint,
   addCalibrationPoint,
   canAddCalibrationPoint,
+  computeAspectFitDisplaySize,
   isValidCalibration,
+  normalizePreviewTouch,
   reorderCalibrationPoints,
   resetCalibrationPoints,
   undoCalibrationPoint,
@@ -56,7 +58,14 @@ export default function CameraSetupScreen() {
   const [detectionDiagnostics, setDetectionDiagnostics] = useState<CandidateDiagnostic[]>([]);
 
   const previewWidth = Math.min(width - 24, 480);
-  const previewHeight = Math.round(previewWidth * (4 / 3));
+  const previewHeight = computeAspectFitDisplaySize(4, 3, previewWidth).height;
+  const capturedDisplaySize = capturedImage
+    ? computeAspectFitDisplaySize(
+        capturedImage.width,
+        capturedImage.height,
+        Math.min(width - 24, 480),
+      )
+    : null;
 
   const isHandedOffRef = useRef(false);
 
@@ -157,10 +166,12 @@ export default function CameraSetupScreen() {
       return;
     }
 
-    const point = {
-      x: event.nativeEvent.locationX / previewSize.width,
-      y: event.nativeEvent.locationY / previewSize.height,
-    };
+    const point = normalizePreviewTouch(
+      event.nativeEvent.locationX,
+      event.nativeEvent.locationY,
+      previewSize.width,
+      previewSize.height,
+    );
 
     const validation = canAddCalibrationPoint(points, point);
     if (!validation.valid) {
@@ -303,12 +314,17 @@ export default function CameraSetupScreen() {
       return;
     }
 
-    const displayWidth = Math.min(width - 24, 480);
-    const displayHeight = Math.round(displayWidth * (capturedImage.height / capturedImage.width));
-    const point = {
-      x: Math.min(1, Math.max(0, event.nativeEvent.locationX / displayWidth)),
-      y: Math.min(1, Math.max(0, event.nativeEvent.locationY / displayHeight)),
-    };
+    const displaySize = computeAspectFitDisplaySize(
+      capturedImage.width,
+      capturedImage.height,
+      Math.min(width - 24, 480),
+    );
+    const point = normalizePreviewTouch(
+      event.nativeEvent.locationX,
+      event.nativeEvent.locationY,
+      displaySize.width,
+      displaySize.height,
+    );
 
     const next = [...detectedCorners];
     next[selectedCorner] = point;
@@ -491,8 +507,8 @@ export default function CameraSetupScreen() {
               style={[
                 styles.previewContainer,
                 {
-                  width: Math.min(width - 24, 480),
-                  height: Math.round(Math.min(width - 24, 480) * (capturedImage.height / capturedImage.width)),
+                  width: capturedDisplaySize?.width ?? previewWidth,
+                  height: capturedDisplaySize?.height ?? previewHeight,
                 },
               ]}>
               <Image
@@ -502,8 +518,8 @@ export default function CameraSetupScreen() {
               />
               <Pressable style={StyleSheet.absoluteFill} onPress={handleImagePress} accessibilityLabel="Detected board image" />
               {(() => {
-                const displayWidth = Math.min(width - 24, 480);
-                const displayHeight = Math.round(displayWidth * (capturedImage.height / capturedImage.width));
+                const displayWidth = capturedDisplaySize?.width ?? previewWidth;
+                const displayHeight = capturedDisplaySize?.height ?? previewHeight;
                 const pixelPoints = detectedCorners.map((point) => ({
                   x: point.x * displayWidth,
                   y: point.y * displayHeight,
@@ -547,6 +563,7 @@ export default function CameraSetupScreen() {
                       <Pressable
                         key={`detected-point-${index}`}
                         onPress={() => setSelectedCorner(index)}
+                        accessibilityLabel={`Corner ${index + 1}, ${CORNER_LABELS[index] ?? 'board corner'}`}
                         style={[
                           styles.marker,
                           selectedCorner === index && styles.selectedMarker,
@@ -593,6 +610,10 @@ export default function CameraSetupScreen() {
             ))}
             <Text style={styles.body}>
               Tap a numbered corner to select it, then tap the image to move it. Confirm when the quadrilateral is valid.
+            </Text>
+            <Text style={styles.body}>
+              Screen-space order: 1 Top-left · 2 Top-right · 3 Bottom-right · 4 Bottom-left.
+              This order is a geometric convention, not proof of which physical side is White.
             </Text>
             {detectedCorners.length === 4 && !isValidCalibration(detectedCorners).valid ? (
               <View style={{ gap: 6, alignItems: 'center' }}>

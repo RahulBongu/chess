@@ -5,6 +5,7 @@ These tests use generated 800x800 fixtures only. They are not physical capture
 evidence and must never be reported as a completed Set 01 pilot.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -587,6 +588,367 @@ class CapturePipelineSyntheticTests(unittest.TestCase):
         self.assertTrue(iou >= 0.85)
         self.assertTrue(err <= 0.04)
 
+
+class GeometryBenchmarkAccountingTests(unittest.TestCase):
+    """Milestone 5.3D: accounting and summary-vs-record reproducibility tests."""
+
+    @staticmethod
+    def make_record(
+        *,
+        approach: str = "test",
+        view: str = "frontal",
+        candidate_generated: bool = True,
+        geometry_valid: bool = True,
+        accepted: bool = True,
+        rejection_reason=None,
+        rejection_stage=None,
+        iou: float = 0.8,
+        corner_error: float = 0.1,
+    ):
+        return {
+            "approach": approach,
+            "file": "synthetic.jpg",
+            "view": view,
+            "candidate_generated": candidate_generated,
+            "geometry_valid": geometry_valid,
+            "accepted": accepted,
+            "rejection_reason": rejection_reason,
+            "rejection_stage": rejection_stage,
+            "candidate_rejection_reason": None,
+            "geometry_rejection_reason": None,
+            "geometry_rejection_detail": None,
+            "iou": iou,
+            "corner_error": corner_error,
+            "approach_confidence": 0.0,
+            "boundary_score": 0.0,
+            "combined_confidence": 0.0,
+            "pattern": None,
+            "sampling_scale": None,
+        }
+
+    def test_summary_denominators_and_quality_views_are_derived_from_records(self):
+        records = [
+            self.make_record(iou=1.0, corner_error=0.0),
+            self.make_record(iou=0.6, corner_error=0.2),
+            self.make_record(
+                accepted=False,
+                rejection_reason="pattern_fit_below_threshold",
+                rejection_stage="acceptance",
+                iou=0.5,
+                corner_error=0.3,
+            ),
+            self.make_record(
+                geometry_valid=False,
+                accepted=False,
+                rejection_reason="geometry_non_convex",
+                rejection_stage="geometry",
+                iou=0.0,
+                corner_error=1.0,
+            ),
+            self.make_record(
+                candidate_generated=False,
+                geometry_valid=False,
+                accepted=False,
+                rejection_reason="no_candidate",
+                rejection_stage="candidate",
+                iou=0.0,
+                corner_error=1.0,
+            ),
+        ]
+
+        summary = geom_bench.summarize_approach(records)
+        accounting = summary["accounting"]
+
+        self.assertEqual(accounting["total_images"], 5)
+        self.assertEqual(accounting["candidate_generated_count"], 4)
+        self.assertEqual(accounting["geometry_valid_count"], 3)
+        self.assertEqual(accounting["accepted_count"], 2)
+        self.assertAlmostEqual(accounting["accepted_pct"], 40.0)
+
+        # Accepted view: conditional on the two accepted records.
+        self.assertEqual(summary["accepted_quality"]["denominator"], 2)
+        self.assertAlmostEqual(summary["accepted_quality"]["mean_iou_pct"], 80.0)
+        self.assertAlmostEqual(
+            summary["accepted_quality"]["mean_corner_error_pct"], 10.0
+        )
+
+        # Proposal view: conditional on the three geometry-valid proposals.
+        self.assertEqual(summary["proposal_quality"]["denominator"], 3)
+        self.assertAlmostEqual(
+            summary["proposal_quality"]["mean_iou_pct"],
+            round((1.0 + 0.6 + 0.5) / 3 * 100, 4),
+        )
+
+        # All-input view: every image counts; rejected proposals are penalized.
+        self.assertEqual(summary["all_input_penalized"]["denominator"], 5)
+        self.assertAlmostEqual(
+            summary["all_input_penalized"]["mean_iou_pct"],
+            round((1.0 + 0.6) / 5 * 100, 4),
+        )
+        self.assertAlmostEqual(
+            summary["all_input_penalized"]["mean_corner_error_pct"],
+            round((0.0 + 0.2 + 1.0 + 1.0 + 1.0) / 5 * 100, 4),
+        )
+
+        self.assertEqual(
+            summary["rejection_reasons"],
+            {
+                "pattern_fit_below_threshold": 1,
+                "geometry_non_convex": 1,
+                "no_candidate": 1,
+            },
+        )
+        self.assertEqual(
+            summary["rejection_stages"],
+            {"acceptance": 1, "geometry": 1, "candidate": 1},
+        )
+
+    def test_missing_and_invalid_proposals_receive_documented_penalties(self):
+        gt = np.array(
+            [[100, 100], [700, 100], [700, 700], [100, 700]], dtype=np.float32
+        )
+        invalid = {"geometry_valid": False, "points": None}
+        iou, error = geom_bench._metric_values(invalid, gt, (800, 800))
+        self.assertEqual(iou, 0.0)
+        self.assertEqual(error, 1.0)
+
+        valid = {"geometry_valid": True, "points": gt}
+        iou, error = geom_bench._metric_values(valid, gt, (800, 800))
+        self.assertAlmostEqual(iou, 1.0)
+        self.assertAlmostEqual(error, 0.0)
+
+    def test_record_construction_preserves_explicit_accounting_fields(self):
+        checkerboard = self.make_checkerboard(800)
+        corners = np.array(
+            [[0, 0], [800, 0], [800, 800], [0, 800]], dtype=np.float32
+        )
+        result = geom_bench._finish_candidate(
+            corners, (800, 800), 0.35, checkerboard, corners
+        )
+        accepted, reason, stage = geom_bench.production_gate(result)
+        record = geom_bench._make_record(
+            "b_relaxed",
+            "synthetic_checkerboard.png",
+            "frontal",
+            result,
+            accepted,
+            reason,
+            stage,
+            1.0,
+            0.0,
+        )
+
+        for field in (
+            "candidate_generated",
+            "geometry_valid",
+            "accepted",
+            "rejection_reason",
+        ):
+            self.assertIn(field, record)
+        self.assertTrue(record["candidate_generated"])
+        self.assertTrue(record["geometry_valid"])
+        self.assertTrue(record["accepted"])
+        self.assertIsNone(record["rejection_reason"])
+        self.assertTrue(record["pattern"]["valid"])
+        self.assertGreaterEqual(record["combined_confidence"], 0.32)
+
+        summary = geom_bench.summarize_approach([record])
+        geom_bench.assert_summary_matches_records(summary, [record])
+        self.assertEqual(summary["accounting"]["accepted_count"], 1)
+
+    def test_strict_production_gate_requires_pattern_evidence_while_relaxed_gate_does_not(self):
+        result = {
+            "candidate_generated": True,
+            "geometry_valid": True,
+            "candidate_rejection_reason": None,
+            "geometry_rejection_reason": None,
+            "pattern": {
+                "valid": False,
+                "reason": "pattern_fit_below_threshold",
+                "score": 0.0,
+            },
+            "combined_confidence": 0.0,
+        }
+
+        relaxed, relaxed_reason, _ = geom_bench.relaxed_geometry_gate(result)
+        strict, strict_reason, strict_stage = geom_bench.production_gate(result)
+
+        self.assertTrue(relaxed)
+        self.assertIsNone(relaxed_reason)
+        self.assertFalse(strict)
+        self.assertEqual(strict_reason, "pattern_fit_below_threshold")
+        self.assertEqual(strict_stage, "acceptance")
+
+        result["pattern"] = {"valid": True, "reason": None, "score": 0.9}
+        result["combined_confidence"] = 0.8 * 0.9
+        strict, strict_reason, strict_stage = geom_bench.production_gate(result)
+        self.assertTrue(strict)
+        self.assertIsNone(strict_reason)
+        self.assertIsNone(strict_stage)
+
+    def test_pattern_evidence_accepts_checkerboard_and_rejects_non_checkerboards(self):
+        checkerboard = self.make_checkerboard(800)
+        corners = np.array(
+            [[0, 0], [800, 0], [800, 800], [0, 800]], dtype=np.float32
+        )
+        evidence = geom_bench.measure_pattern_evidence(checkerboard, corners)
+        self.assertTrue(evidence["valid"])
+        self.assertGreaterEqual(evidence["fit"], 0.55)
+        self.assertGreaterEqual(evidence["alternation"], 0.80)
+        self.assertGreater(evidence["score"], 0.45)
+
+        uniform = np.full((800, 800), 128, dtype=np.uint8)
+        uniform_evidence = geom_bench.measure_pattern_evidence(uniform, corners)
+        self.assertFalse(uniform_evidence["valid"])
+        self.assertEqual(
+            uniform_evidence["reason"], "pattern_contrast_below_threshold"
+        )
+
+        stripes = np.zeros((800, 800), dtype=np.uint8)
+        rows, columns = np.indices((800, 800))
+        stripes = (((columns // 100) % 2) * 255).astype(np.uint8)
+        stripe_evidence = geom_bench.measure_pattern_evidence(stripes, corners)
+        self.assertFalse(stripe_evidence["valid"])
+        self.assertIsNotNone(stripe_evidence["reason"])
+
+    def test_geometry_validation_rejects_concave_and_nearly_collinear_quads(self):
+        convex = np.array(
+            [[100, 100], [700, 100], [700, 700], [100, 700]], dtype=np.float32
+        )
+        valid, reason, _ = geom_bench.validate_quadrilateral(convex, (800, 800))
+        self.assertTrue(valid)
+        self.assertIsNone(reason)
+
+        concave = np.array(
+            [[50, 50], [750, 50], [250, 250], [50, 750]], dtype=np.float32
+        )
+        valid, reason, _ = geom_bench.validate_quadrilateral(concave, (800, 800))
+        self.assertFalse(valid)
+        self.assertEqual(reason, "geometry_non_convex")
+
+        nearly_collinear = np.array(
+            [[50, 400], [300, 400], [550, 400.0000001], [400, 750]], dtype=np.float32
+        )
+        valid, reason, _ = geom_bench.validate_quadrilateral(
+            nearly_collinear, (800, 800)
+        )
+        self.assertFalse(valid)
+        self.assertEqual(reason, "geometry_non_convex")
+
+    def test_approach_d_summary_reports_initial_paired_and_all_input_denominators(self):
+        def make_d_record(initial_iou, refined_iou, refined_valid):
+            return {
+                "approach": "d_simulated",
+                "file": "synthetic.jpg",
+                "view": "frontal",
+                "candidate_generated": True,
+                "geometry_valid": refined_valid,
+                "accepted": refined_valid,
+                "rejection_reason": None if refined_valid else "geometry_non_convex",
+                "rejection_stage": None if refined_valid else "geometry",
+                "iou": refined_iou if refined_valid else 0.0,
+                "corner_error": 0.05 if refined_valid else 1.0,
+                "initial": {
+                    "candidate_generated": True,
+                    "geometry_valid": True,
+                    "geometry_rejection_reason": None,
+                    "rejection_reason": None,
+                    "iou": initial_iou,
+                    "corner_error": 0.1,
+                },
+            }
+
+        records = [
+            make_d_record(0.80, 0.90, True),
+            make_d_record(0.80, 0.90, True),
+            make_d_record(0.80, 0.90, True),
+            make_d_record(0.80, 0.90, True),
+            make_d_record(0.70, 0.0, False),
+        ]
+
+        summary = geom_bench.summarize_approach_d(records)
+
+        self.assertEqual(
+            summary["initial_baseline_all_input"]["denominator"], 5
+        )
+        self.assertAlmostEqual(
+            summary["initial_baseline_all_input"]["mean_iou_pct"],
+            round((0.8 * 4 + 0.7) / 5 * 100, 4),
+        )
+        self.assertEqual(
+            summary["refined_all_input_penalized"]["denominator"], 5
+        )
+        self.assertEqual(
+            summary["refined_all_input_penalized"]["accepted_count"], 4
+        )
+        self.assertAlmostEqual(
+            summary["refined_all_input_penalized"]["mean_iou_pct"],
+            round((0.9 * 4) / 5 * 100, 4),
+        )
+
+        paired = summary["paired_before_after"]
+        self.assertEqual(paired["denominator"], 4)
+        self.assertEqual(paired["excluded_count"], 1)
+        self.assertAlmostEqual(paired["initial_mean_iou_pct"], 80.0)
+        self.assertAlmostEqual(paired["refined_mean_iou_pct"], 90.0)
+        self.assertAlmostEqual(paired["mean_delta_iou_pct_points"], 10.0)
+        self.assertEqual(paired["improved_iou_count"], 4)
+        self.assertEqual(paired["worsened_iou_count"], 0)
+        self.assertEqual(paired["unchanged_iou_count"], 0)
+
+        geom_bench.assert_d_summary_matches_records(summary, records)
+
+    def test_summary_consistency_guard_detects_tampered_aggregate(self):
+        records = [
+            self.make_record(iou=1.0, corner_error=0.0),
+            self.make_record(
+                accepted=False,
+                rejection_reason="no_candidate",
+                rejection_stage="candidate",
+                iou=0.0,
+                corner_error=1.0,
+            ),
+        ]
+        summary = geom_bench.summarize_approach(records)
+        geom_bench.assert_summary_matches_records(summary, records)
+
+        summary["accounting"]["accepted_count"] = 2
+        with self.assertRaises(AssertionError):
+            geom_bench.assert_summary_matches_records(summary, records)
+
+    def test_written_record_hash_matches_exact_file_bytes(self):
+        records = [
+            self.make_record(iou=0.75, corner_error=0.05),
+            self.make_record(
+                accepted=False,
+                rejection_reason="pattern_fit_below_threshold",
+                rejection_stage="acceptance",
+                iou=0.25,
+                corner_error=0.4,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "geometry_records.jsonl"
+            metadata = geom_bench.write_records(path, records)
+            payload = path.read_bytes()
+
+            self.assertEqual(metadata["records_count"], 2)
+            self.assertEqual(
+                metadata["records_sha256"],
+                hashlib.sha256(payload).hexdigest(),
+            )
+            self.assertNotIn(b"\r\n", payload)
+            loaded = [json.loads(line) for line in payload.decode("utf-8").splitlines()]
+            self.assertEqual(len(loaded), 2)
+
+    @staticmethod
+    def make_checkerboard(size: int):
+        rows, columns = np.indices((size, size))
+        square = size // 8
+        return ((((rows // square) + (columns // square)) % 2) * 255).astype(
+            np.uint8
+        )
 
 
 if __name__ == "__main__":
