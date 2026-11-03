@@ -141,6 +141,24 @@ def load_zenodo(root: Path) -> Tuple[List[Sample], List[Sample]]:
     return train, val
 
 
+def load_digital(manifest_path: Path) -> List[Sample]:
+    if not manifest_path.exists():
+        print(f"Digital manifest not found: {manifest_path}", flush=True)
+        return []
+    records = json.loads(manifest_path.read_text(encoding="utf-8"))
+    samples = [
+        Sample(
+            path=r["path"],
+            label=r["label"],
+            group=r["group"],
+            source=r["source"],
+        )
+        for r in records
+    ]
+    print(f"Digital: train={len(samples)}", flush=True)
+    return samples
+
+
 def load_image(path: str) -> np.ndarray:
     with Image.open(path) as image:
         return np.asarray(image.convert("RGB"), dtype=np.uint8)
@@ -429,6 +447,20 @@ def main() -> int:
             "keeping Set 4 untouched; 'fenit_piece' averages the two."
         ),
     )
+    parser.add_argument(
+        "--include-digital",
+        action="store_true",
+        help="Include clean-room digital piece crops for laptop-screen support.",
+    )
+    parser.add_argument(
+        "--digital-manifest",
+        default=r"C:\dev\chess\dist\cache\digital_crops\manifest.json",
+    )
+    parser.add_argument(
+        "--piece-loss-weighting",
+        action="store_true",
+        help="Boost loss weights for weak piece classes (kings, knights, bishops, rooks).",
+    )
     parser.add_argument("--suffix", default="", help="Optional tag for cache and output names.")
     parser.add_argument(
         "--output-onnx",
@@ -459,12 +491,13 @@ def main() -> int:
 
     fenit_train, fenit_val = load_fenit(Path(args.fenit_manifest))
     zenodo_train, zenodo_val = load_zenodo(Path(args.zenodo_dir))
+    digital_train = load_digital(Path(args.digital_manifest)) if args.include_digital else []
     if args.mode == "zenodo":
         train_samples = list(zenodo_train)
     elif args.mode == "fenit":
         train_samples = list(fenit_train)
     else:
-        train_samples = fenit_train + zenodo_train
+        train_samples = fenit_train + zenodo_train + digital_train
     # Evaluate both domains for every mode; never pool them into one claim.
     val_samples = fenit_val + zenodo_val
     if not train_samples:
@@ -474,16 +507,19 @@ def main() -> int:
     cache_dir = Path(args.cache_dir)
     # Strong augmentation does not change cached source pixels, so mixed and
     # balanced share the same cache; only the sampling policy differs.
-    train_cache_name = f"train_rgb_{args.mode}"
+    digital_tag = "_digital" if args.include_digital else ""
+    train_cache_name = f"train_rgb_{args.mode}{digital_tag}"
     train_images = build_cache(train_samples, train_cache_name, cache_dir)
     val_images = build_cache(val_samples, "val_rgb", cache_dir)
     train_labels = np.array([s.label for s in train_samples], dtype=np.int64)
     val_labels = np.array([s.label for s in val_samples], dtype=np.int64)
     val_sources = np.array([s.source for s in val_samples])
 
-    domains = np.array(
-        ["fenit" if sample.source.startswith("fenit:") else "zenodo" for sample in train_samples]
-    )
+    domains = np.array([
+        "fenit" if s.source.startswith("fenit:")
+        else ("digital" if s.source.startswith("digital:") else "zenodo")
+        for s in train_samples
+    ])
     domain_counts = collections.Counter(domains.tolist())
     if args.mode == "balanced":
         # Every source domain contributes equal expected mass per epoch. Zenodo
@@ -533,6 +569,27 @@ def main() -> int:
     # the queen class to dominate the loss.
     weights = np.sqrt(counts.sum() / (len(CLASSES) * np.maximum(counts, 1)))
     weights = weights / weights.mean()
+    if args.piece_loss_weighting:
+        # Heavily penalise collapsing complex pieces (knights, bishops, rooks, kings) into pawns.
+        piece_boost = {
+            "empty": 1.0,
+            "white_pawn": 1.0,
+            "black_pawn": 1.0,
+            "white_knight": 1.6,
+            "black_knight": 1.6,
+            "white_bishop": 1.6,
+            "black_bishop": 1.6,
+            "white_rook": 1.4,
+            "black_rook": 1.4,
+            "white_queen": 1.4,
+            "black_queen": 1.4,
+            "white_king": 2.2,
+            "black_king": 2.2,
+        }
+        boost_factors = np.array([piece_boost[c] for c in CLASSES], dtype=np.float32)
+        weights = weights * boost_factors
+        weights = weights / weights.mean()
+        print("Piece loss weighting enabled: kings=2.2x, minor pieces=1.6x, rooks/queens=1.4x", flush=True)
     class_weights = torch.tensor(weights, dtype=torch.float32)
     print("Domain samples:", dict(domain_counts), flush=True)
     print("Raw class counts:", dict(zip(CLASSES, raw_counts.tolist())), flush=True)
