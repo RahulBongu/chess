@@ -44,6 +44,10 @@ class LiveCameraView(
   private val trackingExecutor = Executors.newSingleThreadExecutor()
   private val analysisBusy = AtomicBoolean(false)
   private val trackingBusy = AtomicBoolean(false)
+  private val analysisDroppedCount = java.util.concurrent.atomic.AtomicInteger(0)
+  private val analysisAnalyzedCount = java.util.concurrent.atomic.AtomicInteger(0)
+  private val trackingDroppedCount = java.util.concurrent.atomic.AtomicInteger(0)
+  private val trackingAnalyzedCount = java.util.concurrent.atomic.AtomicInteger(0)
   private val cameraReadyEmitted = AtomicBoolean(false)
   private val previewReadyEmitted = AtomicBoolean(false)
   private val trackingReadyEmitted = AtomicBoolean(false)
@@ -135,6 +139,10 @@ class LiveCameraView(
     trackingAnalysis = null
     analysisBusy.set(false)
     trackingBusy.set(false)
+    analysisDroppedCount.set(0)
+    analysisAnalyzedCount.set(0)
+    trackingDroppedCount.set(0)
+    trackingAnalyzedCount.set(0)
     cameraReadyEmitted.set(false)
     previewReadyEmitted.set(false)
     trackingReadyEmitted.set(false)
@@ -229,9 +237,11 @@ class LiveCameraView(
         try {
           val now = System.currentTimeMillis()
           if (analysisBusy.get() || now - lastFrameTimeMs < frameIntervalMs) {
+            analysisDroppedCount.incrementAndGet()
             return@setAnalyzer
           }
           lastFrameTimeMs = now
+          analysisAnalyzedCount.incrementAndGet()
 
           val plane = imageProxy.planes.firstOrNull() ?: return@setAnalyzer
 
@@ -281,11 +291,21 @@ class LiveCameraView(
           }
           val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
           val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+          val analyzed = analysisAnalyzedCount.get()
+          if (analyzed <= 3 || analyzed % 25 == 0) {
+            android.util.Log.i(
+              "LiveCameraDiag",
+              "detection analysed=$analyzed skipped=${analysisDroppedCount.get()} ${outputWidth}x${outputHeight}"
+            )
+          }
           val payload = mapOf(
             "base64" to base64,
             "width" to outputWidth,
             "height" to outputHeight,
-            "rotationDegrees" to rotationDegrees
+            "rotationDegrees" to rotationDegrees,
+            "stream" to "detection",
+            "analyzedFrames" to analyzed,
+            "droppedFrames" to analysisDroppedCount.get()
           )
 
           android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -314,9 +334,11 @@ class LiveCameraView(
         try {
           val now = System.currentTimeMillis()
           if (trackingBusy.get() || now - lastTrackingTimeMs < trackingIntervalMs) {
+            trackingDroppedCount.incrementAndGet()
             return@setAnalyzer
           }
           lastTrackingTimeMs = now
+          trackingAnalyzedCount.incrementAndGet()
 
           val plane = imageProxy.planes.firstOrNull() ?: return@setAnalyzer
 
@@ -363,12 +385,21 @@ class LiveCameraView(
           }
           val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
           val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+          val analyzed = trackingAnalyzedCount.get()
+          if (analyzed <= 3 || analyzed % 50 == 0) {
+            android.util.Log.i(
+              "LiveCameraDiag",
+              "tracking analysed=$analyzed skipped=${trackingDroppedCount.get()} ${outputWidth}x${outputHeight}"
+            )
+          }
           val payload = mapOf(
             "base64" to base64,
             "width" to outputWidth,
             "height" to outputHeight,
             "rotationDegrees" to rotationDegrees,
-            "stream" to "tracking"
+            "stream" to "tracking",
+            "analyzedFrames" to analyzed,
+            "droppedFrames" to trackingDroppedCount.get()
           )
 
           android.os.Handler(android.os.Looper.getMainLooper()).post {

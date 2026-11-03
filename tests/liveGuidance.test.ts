@@ -84,6 +84,15 @@ test('LiveGuidanceCoordinator produces perspective geometry and instructions', a
   assert.ok(model.perspectiveGeometry.destinationQuad !== null);
   assert.ok(model.perspectiveGeometry.arrow !== null);
 
+  // Milestone 5.4F stage telemetry is populated for every processed frame.
+  assert.ok(Number.isFinite(model.stageTimings.trackerMs));
+  assert.ok(Number.isFinite(model.stageTimings.recognizerMs));
+  assert.ok(Number.isFinite(model.stageTimings.geometryMs));
+  assert.ok(Number.isFinite(model.stageTimings.totalMs));
+  assert.ok(model.stageTimings.totalMs >= 0);
+  assert.equal(model.engineResultCount, 1);
+  assert.ok(model.engineLatencyMs !== null && model.engineLatencyMs >= 0);
+
   // Verify instruction text
   assert.ok(
     model.instruction.includes('e2') && model.instruction.includes('e4'),

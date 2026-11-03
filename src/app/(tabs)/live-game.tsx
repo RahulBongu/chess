@@ -16,6 +16,13 @@ import { validateGrayscaleFrame } from '@/vision/grayscaleFrame';
 import { sampleSquareObservations } from '@/vision/squareSampler';
 import { BoardMotionTracker } from '@/vision/motionTracker';
 import { createFrameToViewTransform } from '@/vision/cameraProjection';
+import {
+  LiveDiagnostics,
+  createEmptySnapshot,
+  describePipelineStage,
+  type LiveDiagSnapshot,
+  type StageLatencySummary,
+} from '@/vision/liveDiagnostics';
 import { LiveCameraView } from '../../../modules/live-camera/src';
 import {
   LiveGuidanceCoordinator,
@@ -66,9 +73,13 @@ export default function LiveGameScreen() {
   const [orientation, setOrientation] = useState<BoardOrientation>('white_bottom');
   const [guidance, setGuidance] = useState<LiveGuidanceModel | null>(null);
   const [status, setStatus] = useState('Start live camera to track the physical board.');
-  const [frameCount, setFrameCount] = useState(0);
-  const [trackingFrameCount, setTrackingFrameCount] = useState(0);
-  const [detectionFrameCount, setDetectionFrameCount] = useState(0);
+  // 5.4F diagnostics: counters update at frame rate in a ref (no React
+  // render), and a 2 Hz snapshot drives the HUD.
+  const diagnosticsRef = useRef<LiveDiagnostics | null>(null);
+  if (!diagnosticsRef.current) {
+    diagnosticsRef.current = new LiveDiagnostics();
+  }
+  const [diag, setDiag] = useState<LiveDiagSnapshot>(() => createEmptySnapshot());
 
   const coordinatorRef = useRef<LiveGuidanceCoordinator | null>(null);
   if (!coordinatorRef.current) {
@@ -90,10 +101,31 @@ export default function LiveGameScreen() {
     inliers: number | null;
     timestamp: number;
   } | null>(null);
+  // Detection runs at a different resolution than motion tracking (640x480
+  // vs 352x288 on the target phone). The motion tracker requires the seed and
+  // update frames to share dimensions, so seed it from the latest tracking
+  // frame rather than the detection frame.
+  const latestTrackingFrameRef = useRef<{
+    frame: { width: number; height: number; data: Uint8Array };
+    timestamp: number;
+  } | null>(null);
+  const previousRecognizerStatusRef = useRef<string | null>(null);
+  const lastEngineResultCountRef = useRef(0);
 
   useEffect(() => {
     coordinatorRef.current?.setOrientation(orientation);
   }, [orientation]);
+
+  // HUD refresh at 2 Hz; frame handlers only touch the diagnostics ref.
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    const interval = setInterval(() => {
+      setDiag(diagnosticsRef.current!.snapshot(Date.now()));
+    }, 500);
+    return () => clearInterval(interval);
+  }, [active]);
 
   useEffect(() => {
     return () => {
@@ -110,30 +142,68 @@ export default function LiveGameScreen() {
   // High-rate tracking frame handler (~12.5 fps, low-res)
   const handleTrackingFrame = useCallback(
     async (event: {
-      nativeEvent: { base64: string; width: number; height: number; rotationDegrees?: number };
-    }) => {
-      if (!active) return;
-      const frameWidth = event.nativeEvent.width;
-      const frameHeight = event.nativeEvent.height;
-      const validation = validateGrayscaleFrame(event.nativeEvent.base64, frameWidth, frameHeight);
-      if (!validation.ok) return;
-      const gray = validation.buffer;
-      const grayFrame = { width: frameWidth, height: frameHeight, data: gray };
-      const now = Date.now();
-
-      // Update motion tracker on every tracking frame
-      const proposal = motionTrackerRef.current.update(grayFrame, now);
-
-      // Cache the latest tracking proposal for the detection pipeline
-      latestTrackingProposalRef.current = {
-        corners: proposal.corners ? { normalized: proposal.corners.normalized } : null,
-        confidence: proposal.confidence,
-        inliers: proposal.inliers,
-        timestamp: now,
+      nativeEvent: {
+        base64: string;
+        width: number;
+        height: number;
+        rotationDegrees?: number;
+        analyzedFrames?: number;
+        droppedFrames?: number;
       };
+    }) => {
+      const diagnostics = diagnosticsRef.current!;
+      // Native only emits the next frame after release, so always release.
+      if (!active) {
+        cameraRef.current?.releaseTrackingFrame?.();
+        return;
+      }
 
-      setTrackingFrameCount((v) => v + 1);
-      cameraRef.current?.releaseTrackingFrame?.();
+      const native = event.nativeEvent;
+      // Reception counters increment BEFORE decoding or tracking.
+      diagnostics.noteNativeTracking(native.analyzedFrames, native.droppedFrames);
+      diagnostics.counters.trackingEventsReceived += 1;
+      const received = diagnostics.counters.trackingEventsReceived;
+      if (received <= 3 || received % 50 === 0) {
+        console.log(
+          `[LiveCameraDiag] tracking rx=${received} native=${native.analyzedFrames ?? '—'} skipped=${native.droppedFrames ?? '—'} size=${native.width}x${native.height}`,
+        );
+      }
+
+      try {
+        const decodeStart = performance.now();
+        const validation = validateGrayscaleFrame(native.base64, native.width, native.height);
+        diagnostics.counters.frameDecodes += 1;
+        diagnostics.record('decode', performance.now() - decodeStart);
+        if (!validation.ok) {
+          diagnostics.counters.trackingDecodeFailures += 1;
+          return;
+        }
+
+        const grayFrame = { width: native.width, height: native.height, data: validation.buffer };
+        const now = Date.now();
+        latestTrackingFrameRef.current = { frame: grayFrame, timestamp: now };
+        diagnostics.counters.motionTrackerAttempts += 1;
+        const trackerStart = performance.now();
+        const proposal = motionTrackerRef.current.update(grayFrame, now);
+        diagnostics.record('tracker', performance.now() - trackerStart);
+
+        const valid = proposal.state === 'tracking' && proposal.corners !== null;
+        if (valid) {
+          diagnostics.counters.motionTrackerValid += 1;
+        }
+        // Cache the freshest fix for the lower-rate detection pipeline. A
+        // null entry lets the coordinator fall back to its own tracker.
+        latestTrackingProposalRef.current = {
+          corners: valid && proposal.corners ? { normalized: proposal.corners.normalized } : null,
+          confidence: proposal.confidence,
+          inliers: proposal.inliers,
+          timestamp: now,
+        };
+      } catch {
+        diagnostics.counters.trackingDecodeFailures += 1;
+      } finally {
+        cameraRef.current?.releaseTrackingFrame?.();
+      }
     },
     [active],
   );
@@ -141,48 +211,97 @@ export default function LiveGameScreen() {
   // Lower-rate detection frame handler (~4 fps, higher-res)
   const handleFrame = useCallback(
     async (event: {
-      nativeEvent: { base64: string; width: number; height: number; rotationDegrees?: number };
+      nativeEvent: {
+        base64: string;
+        width: number;
+        height: number;
+        rotationDegrees?: number;
+        analyzedFrames?: number;
+        droppedFrames?: number;
+      };
     }) => {
-      if (!active || busyRef.current) {
+      const diagnostics = diagnosticsRef.current!;
+      if (!active) {
+        cameraRef.current?.releaseFrame?.();
         return;
       }
+
+      const native = event.nativeEvent;
+      // Reception counters increment BEFORE decoding or board detection.
+      diagnostics.noteNativeDetection(native.analyzedFrames, native.droppedFrames);
+      diagnostics.counters.detectionEventsReceived += 1;
+      const received = diagnostics.counters.detectionEventsReceived;
+      if (received <= 3 || received % 25 === 0) {
+        console.log(
+          `[LiveCameraDiag] detection rx=${received} native=${native.analyzedFrames ?? '—'} skipped=${native.droppedFrames ?? '—'} size=${native.width}x${native.height}`,
+        );
+      }
+
+      if (busyRef.current) {
+        diagnostics.counters.detectionSkippedBusy += 1;
+        cameraRef.current?.releaseFrame?.();
+        return;
+      }
+
       busyRef.current = true;
+      const handlerStart = performance.now();
       try {
-        const frameWidth = event.nativeEvent.width;
-        const frameHeight = event.nativeEvent.height;
-        const validation = validateGrayscaleFrame(event.nativeEvent.base64, frameWidth, frameHeight);
+        const decodeStart = performance.now();
+        const validation = validateGrayscaleFrame(native.base64, native.width, native.height);
+        diagnostics.counters.frameDecodes += 1;
+        diagnostics.record('decode', performance.now() - decodeStart);
         if (!validation.ok) {
+          diagnostics.counters.detectionDecodeFailures += 1;
           setStatus(validation.message);
           return;
         }
-        const gray = validation.buffer;
-        const grayFrame = { width: frameWidth, height: frameHeight, data: gray };
-        const now = Date.now();
+
+        const frameWidth = native.width;
+        const frameHeight = native.height;
+        const grayFrame = { width: frameWidth, height: frameHeight, data: validation.buffer };
         lastFrameInfoRef.current = {
           width: frameWidth,
           height: frameHeight,
-          rotationDegrees: event.nativeEvent.rotationDegrees ?? 0,
+          rotationDegrees: native.rotationDegrees ?? 0,
         };
 
         // 1. Full detection when needed
         let detectedCorners: Point2D[] | null = null;
         let confidence = 0;
         const detectionDue =
-          motionTrackerRef.current.needsReseed() || now - lastDetectionMsRef.current >= 1500;
+          motionTrackerRef.current.needsReseed() ||
+          Date.now() - lastDetectionMsRef.current >= 1500;
         if (detectionDue) {
-          const det = await detectBoardFromGrayscaleBuffer(gray, frameWidth, frameHeight);
-          lastDetectionMsRef.current = now;
+          diagnostics.counters.fullDetectionAttempts += 1;
+          const detStart = performance.now();
+          const det = await detectBoardFromGrayscaleBuffer(validation.buffer, frameWidth, frameHeight);
+          diagnostics.record('detection', performance.now() - detStart);
+          lastDetectionMsRef.current = Date.now();
+          diagnostics.counters.candidatesGenerated += det.candidateCount ?? 0;
           if (det.success) {
+            diagnostics.counters.candidatesAccepted += 1;
             detectedCorners = det.corners;
             confidence = det.confidence;
-            motionTrackerRef.current.seed(grayFrame, det.corners, now);
+            const seedFrame = latestTrackingFrameRef.current;
+            if (!seedFrame || Date.now() - seedFrame.timestamp > 1000) {
+              diagnostics.counters.motionTrackerSeedSkippedNoFrame += 1;
+            } else {
+              const seeded = motionTrackerRef.current.seed(
+                seedFrame.frame,
+                det.corners,
+                Date.now(),
+              );
+              if (seeded) {
+                diagnostics.counters.motionTrackerSeeds += 1;
+              } else {
+                diagnostics.counters.motionTrackerSeedFailures += 1;
+              }
+            }
           }
         }
 
-        setFrameCount((val) => val + 1);
-        setDetectionFrameCount((v) => v + 1);
-
         const coordinator = coordinatorRef.current;
+        const now = Date.now();
 
         // 2. Sample 64-square observations from the freshest fix.
         let observations: SquareObservation[] | null = null;
@@ -197,20 +316,30 @@ export default function LiveGameScreen() {
               x: pt.x * frameWidth,
               y: pt.y * frameHeight,
             }));
+            const sampleStart = performance.now();
             observations = sampleSquareObservations(grayFrame, pixelCorners, orientation);
+            diagnostics.counters.squareSamplingOps += 1;
+            diagnostics.record('sampling', performance.now() - sampleStart);
+          } else {
+            diagnostics.counters.squareSamplingSkipped += 1;
           }
         }
 
-        // 3. Guidance coordinator
+        // 3. Guidance coordinator. Only pass a fresh motion-tracked fix;
+        // a stale proposal must never keep an overlay alive.
         if (coordinator) {
-          const trackingProposal = latestTrackingProposalRef.current
-            ? {
-                corners: latestTrackingProposalRef.current.corners!.normalized,
-                confidence: latestTrackingProposalRef.current.confidence,
-                inliers: latestTrackingProposalRef.current.inliers,
-              }
-            : null;
+          const cached = latestTrackingProposalRef.current;
+          const fresh = cached && cached.corners && now - cached.timestamp <= 500;
+          const trackingProposal =
+            fresh && cached.corners
+              ? {
+                  corners: cached.corners.normalized,
+                  confidence: cached.confidence,
+                  inliers: cached.inliers,
+                }
+              : null;
 
+          const guidanceStart = performance.now();
           const model = await coordinator.processFrame(
             detectedCorners,
             observations,
@@ -219,6 +348,38 @@ export default function LiveGameScreen() {
             now,
             trackingProposal,
           );
+          diagnostics.record('guidance', performance.now() - guidanceStart);
+          diagnostics.record('moveRecognition', model.stageTimings.recognizerMs);
+
+          if (model.engineResultCount !== lastEngineResultCountRef.current) {
+            lastEngineResultCountRef.current = model.engineResultCount;
+            diagnostics.counters.engineResults = model.engineResultCount;
+            if (model.engineLatencyMs !== null) {
+              diagnostics.record('engine', model.engineLatencyMs);
+            }
+          }
+
+          if (
+            model.recognizerStatus === 'move_detected' &&
+            previousRecognizerStatusRef.current !== 'move_detected'
+          ) {
+            diagnostics.counters.movesRecognized += 1;
+          }
+          if (model.recognizerStatus === 'uncertain') {
+            diagnostics.counters.uncertainObservations += 1;
+          }
+          if (observations && model.trackingState !== 'tracking') {
+            diagnostics.counters.observationsSkippedUntrusted += 1;
+          }
+          previousRecognizerStatusRef.current = model.recognizerStatus;
+
+          const overlayTrusted =
+            model.trackingState === 'tracking' && model.perspectiveGeometry.corners !== null;
+          if (overlayTrusted) {
+            diagnostics.counters.trustedOverlayFrames += 1;
+            diagnostics.record('overlayModel', performance.now() - handlerStart);
+          }
+
           setGuidance(model);
           setStatus(model.instruction);
         }
@@ -270,9 +431,8 @@ export default function LiveGameScreen() {
     }
     setPreviewReady(false);
     setAnalysisReady(false);
-    setFrameCount(0);
-    setTrackingFrameCount(0);
-    setDetectionFrameCount(0);
+    diagnosticsRef.current!.reset(Date.now());
+    setDiag(createEmptySnapshot());
     startupTokenRef.current += 1;
     clearStartupTimeout();
     setActive(true);
@@ -281,6 +441,9 @@ export default function LiveGameScreen() {
     lastDetectionMsRef.current = 0;
     lastFrameInfoRef.current = null;
     latestTrackingProposalRef.current = null;
+    latestTrackingFrameRef.current = null;
+    previousRecognizerStatusRef.current = null;
+    lastEngineResultCountRef.current = 0;
     startupTimeoutRef.current = setTimeout(() => {
       if (previewReady) return;
       setActive(false);
@@ -299,6 +462,11 @@ export default function LiveGameScreen() {
     lastDetectionMsRef.current = 0;
     lastFrameInfoRef.current = null;
     latestTrackingProposalRef.current = null;
+    latestTrackingFrameRef.current = null;
+    previousRecognizerStatusRef.current = null;
+    lastEngineResultCountRef.current = 0;
+    // Keep the final interval's numbers visible after stopping.
+    setDiag(diagnosticsRef.current!.snapshot(Date.now()));
     setStatus('Live camera stopped.');
   };
 
@@ -342,6 +510,18 @@ export default function LiveGameScreen() {
   }
 
   const geometry = guidance?.perspectiveGeometry;
+  const pipeline = describePipelineStage(
+    diag,
+    guidance?.trackingState ?? null,
+    Boolean(guidance?.perspectiveGeometry.corners),
+  );
+  const fmtRate = (value: number | null) => (value === null ? '—' : `${value.toFixed(1)}/s`);
+  const sessionSeconds =
+    diag.sessionElapsedMs === null ? null : Math.round(diag.sessionElapsedMs / 1000);
+  const fmtLatency = (summary: StageLatencySummary) =>
+    summary.count === 0 || summary.medianMs === null
+      ? '—'
+      : `${summary.medianMs}/${summary.p95Ms} (n=${summary.count})`;
   const trackingDegraded = guidance?.trackingState === 'holding';
   const boundaryColor = trackingDegraded ? '#F59E0B' : '#00E5FF';
   const gridColor = trackingDegraded ? 'rgba(245, 158, 11, 0.4)' : 'rgba(0, 229, 255, 0.45)';
@@ -569,8 +749,40 @@ export default function LiveGameScreen() {
             Track: {guidance?.trackingState?.toUpperCase() ?? '—'} · src {guidance?.trackingSource ?? '—'} · inliers{' '}
             {guidance?.trackInliers ?? '—'} · conf {Math.round((guidance?.trackingConfidence ?? 0) * 100)}%
           </Text>
+          <Text style={styles.telemetryText}>Pipeline: {pipeline.label}</Text>
           <Text style={styles.telemetryText}>
-            Frames: det {detectionFrameCount} · trk {trackingFrameCount} · Status: {guidance?.recognizerStatus ?? 'ready'}
+            Session {sessionSeconds ?? '—'}s avg: trk {fmtRate(diag.sessionRates.trackingReceivedPerSec)}{' '}
+            (native analysed {diag.counters.nativeTrackingAnalyzed ?? '—'} · skipped{' '}
+            {diag.counters.nativeTrackingDropped ?? '—'},{' '}
+            {fmtRate(diag.sessionRates.trackingDroppedPerSec)}) · det{' '}
+            {fmtRate(diag.sessionRates.detectionReceivedPerSec)} (native analysed{' '}
+            {diag.counters.nativeDetectionAnalyzed ?? '—'} · skipped{' '}
+            {diag.counters.nativeDetectionDropped ?? '—'},{' '}
+            {fmtRate(diag.sessionRates.detectionDroppedPerSec)})
+          </Text>
+          <Text style={styles.telemetryText}>
+            Tracker {diag.counters.motionTrackerAttempts} updates · {diag.counters.motionTrackerValid} valid ·
+            seeds {diag.counters.motionTrackerSeeds} (fail {diag.counters.motionTrackerSeedFailures}, no frame{' '}
+            {diag.counters.motionTrackerSeedSkippedNoFrame}) · detection{' '}
+            {diag.counters.fullDetectionAttempts} runs · {diag.counters.candidatesGenerated} candidates ·{' '}
+            {diag.counters.candidatesAccepted} accepted
+          </Text>
+          <Text style={styles.telemetryText}>
+            Samples {diag.counters.squareSamplingOps} (skipped {diag.counters.squareSamplingSkipped}) · moves{' '}
+            {diag.counters.movesRecognized} · uncertain {diag.counters.uncertainObservations} · untrusted{' '}
+            {diag.counters.observationsSkippedUntrusted} · overlay {diag.counters.trustedOverlayFrames}
+          </Text>
+          <Text style={styles.telemetryText}>
+            Latency median/p95 ms: decode {fmtLatency(diag.latency.decode)} · trk{' '}
+            {fmtLatency(diag.latency.tracker)} · det {fmtLatency(diag.latency.detection)} · samp{' '}
+            {fmtLatency(diag.latency.sampling)} · guide {fmtLatency(diag.latency.guidance)} · move{' '}
+            {fmtLatency(diag.latency.moveRecognition)} · engine {fmtLatency(diag.latency.engine)} · overlay{' '}
+            {fmtLatency(diag.latency.overlayModel)}
+          </Text>
+          <Text style={styles.telemetryText}>
+            Status: {guidance?.recognizerStatus ?? 'ready'} · decode failures T
+            {diag.counters.trackingDecodeFailures}/D{diag.counters.detectionDecodeFailures} · busy skips{' '}
+            {diag.counters.detectionSkippedBusy} · engine results {diag.counters.engineResults}
           </Text>
         </View>
       </ScrollView>

@@ -8,6 +8,10 @@ export interface LiveCameraFrameEvent {
   rotationDegrees?: number;
   /** which stream produced this frame: 'detection' (full resolution) or 'tracking' (low-res high-rate). */
   stream?: 'detection' | 'tracking';
+  /** Cumulative frames analysed by the native analyzer for this stream. */
+  analyzedFrames?: number;
+  /** Cumulative frames skipped by the native analyzer (throttle or busy). */
+  droppedFrames?: number;
 }
 
 export interface LiveCameraViewProps {

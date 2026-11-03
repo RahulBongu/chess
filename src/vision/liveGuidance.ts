@@ -40,6 +40,18 @@ export interface MotionTrackProposal {
   inliers?: number | null;
 }
 
+/**
+ * Per-stage wall-clock timings for a single processFrame call, in
+ * milliseconds. These measure the JavaScript/vision pipeline only; camera
+ * capture, native event delivery and React rendering are measured separately.
+ */
+export interface LiveStageTimings {
+  trackerMs: number;
+  recognizerMs: number;
+  geometryMs: number;
+  totalMs: number;
+}
+
 export interface LiveGuidanceModel {
   trackingState: TrackingState;
   /** Which input produced the current fix, or 'hold'/'none' when degraded. */
@@ -58,6 +70,12 @@ export interface LiveGuidanceModel {
   isEngineAnalyzing: boolean;
   /** Set while a pawn promotion awaits explicit piece confirmation. */
   pendingPromotion: PendingPromotion | null;
+  /** Stage timings for this frame (JS pipeline only). */
+  stageTimings: LiveStageTimings;
+  /** Wall-clock duration of the last accepted engine search, if any. */
+  engineLatencyMs: number | null;
+  /** Monotonic count of accepted engine results, for diagnostics. */
+  engineResultCount: number;
   perspectiveGeometry: {
     corners: [Point2D, Point2D, Point2D, Point2D] | null;
     sourceQuad: PerspectiveQuad | null;
@@ -84,6 +102,8 @@ export class LiveGuidanceCoordinator {
   private analyzedFen: string | null = null;
   private isAnalyzing = false;
   private searchGeneration = 0;
+  private lastEngineLatencyMs: number | null = null;
+  private engineResultCount = 0;
 
   constructor(options: LiveGuidanceOptions = {}) {
     this.orientation = options.orientation ?? 'white_bottom';
@@ -133,6 +153,8 @@ export class LiveGuidanceCoordinator {
     nowMs?: number,
     trackedProposal: MotionTrackProposal | null = null,
   ): Promise<LiveGuidanceModel> {
+    const frameStart = nowMsForTiming();
+
     // 1. Update temporal corner tracker (detection preferred, motion-tracked fallback)
     const trackingState = this.tracker.update(
       detectedCorners,
@@ -143,6 +165,7 @@ export class LiveGuidanceCoordinator {
     );
     const stabilizedCorners = this.tracker.getCorners();
     const trackingConfidence = this.tracker.getConfidence();
+    const trackerMs = nowMsForTiming() - frameStart;
 
     const trackingSource: TrackingSource =
       detectedCorners && detectedCorners.length === 4 && trackingState === 'tracking'
@@ -158,9 +181,11 @@ export class LiveGuidanceCoordinator {
     // allowed to trigger a move. The confirmed position is preserved.
     let recognitionResult: MoveRecognitionResult | null = null;
     const recognizerTrusted = trackingState === 'tracking';
+    const recognizerStart = nowMsForTiming();
     if (observations && observations.length === 64 && recognizerTrusted) {
       recognitionResult = this.recognizer.processFrame(observations, isHandOccluded);
     }
+    const recognizerMs = nowMsForTiming() - recognizerStart;
 
     const currentFen = this.recognizer.getFen();
     const turn = this.recognizer.getTurn();
@@ -172,12 +197,15 @@ export class LiveGuidanceCoordinator {
       this.searchGeneration += 1;
       const currentToken = this.searchGeneration;
       this.isAnalyzing = true;
+      const engineStart = nowMsForTiming();
 
       this.engine
         .analyze(currentFen, { depth: 8, maxTimeMs: 150 })
         .then((result) => {
           if (currentToken === this.searchGeneration && result.fen === this.recognizer.getFen()) {
             this.currentAnalysis = result;
+            this.lastEngineLatencyMs = nowMsForTiming() - engineStart;
+            this.engineResultCount += 1;
           }
         })
         .catch(() => {
@@ -222,6 +250,7 @@ export class LiveGuidanceCoordinator {
     let destinationQuad: PerspectiveQuad | null = null;
     let arrow: ArrowGeometry | null = null;
     let gridLines: GridLine[] | null = null;
+    const geometryStart = nowMsForTiming();
     const overlayTrusted = stabilizedCorners && trackingState === 'tracking';
 
     if (stabilizedCorners) {
@@ -246,6 +275,7 @@ export class LiveGuidanceCoordinator {
         );
       }
     }
+    const geometryMs = nowMsForTiming() - geometryStart;
 
     return {
       trackingState,
@@ -268,6 +298,14 @@ export class LiveGuidanceCoordinator {
       engineName: this.engineSelection.engineName,
       isEngineAnalyzing: this.isAnalyzing,
       pendingPromotion: this.recognizer.getPendingPromotion(),
+      stageTimings: {
+        trackerMs,
+        recognizerMs,
+        geometryMs,
+        totalMs: nowMsForTiming() - frameStart,
+      },
+      engineLatencyMs: this.lastEngineLatencyMs,
+      engineResultCount: this.engineResultCount,
       perspectiveGeometry: {
         corners: stabilizedCorners,
         sourceQuad,
@@ -314,6 +352,16 @@ export class LiveGuidanceCoordinator {
     this.analyzedFen = null;
     this.isAnalyzing = false;
     this.searchGeneration += 1;
+    this.lastEngineLatencyMs = null;
+    this.engineResultCount = 0;
     this.engine.stop();
   }
+}
+
+/** Monotonic clock for stage timings, with a wall-clock fallback. */
+function nowMsForTiming(): number {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
 }
