@@ -6,6 +6,7 @@ import {
   addCalibrationPoint,
   canAddCalibrationPoint,
   isValidCalibration,
+  reorderCalibrationPoints,
   resetCalibrationPoints,
   undoCalibrationPoint,
 } from '../src/calibration/geometry.ts';
@@ -75,4 +76,25 @@ test('a valid four-corner quadrilateral is accepted', () => {
   ];
   const result = isValidCalibration(points);
   assert.equal(result.valid, true);
+});
+
+test('reorderCalibrationPoints normalizes counter-clockwise or unaligned corners to valid clockwise order', () => {
+  // Counter-clockwise points: top-left, bottom-left, bottom-right, top-right
+  const ccwPoints = [
+    { x: 0.1, y: 0.1 },
+    { x: 0.1, y: 0.9 },
+    { x: 0.9, y: 0.9 },
+    { x: 0.9, y: 0.1 },
+  ];
+  // Initial CCW order fails because signedArea is negative
+  assert.equal(isValidCalibration(ccwPoints).valid, false);
+
+  // After reordering clockwise starting at top-left
+  const reordered = reorderCalibrationPoints(ccwPoints);
+  assert.equal(reordered.length, 4);
+  assert.deepEqual(reordered[0], { x: 0.1, y: 0.1 }); // Top-left
+  assert.deepEqual(reordered[1], { x: 0.9, y: 0.1 }); // Top-right
+  assert.deepEqual(reordered[2], { x: 0.9, y: 0.9 }); // Bottom-right
+  assert.deepEqual(reordered[3], { x: 0.1, y: 0.9 }); // Bottom-left
+  assert.equal(isValidCalibration(reordered).valid, true);
 });

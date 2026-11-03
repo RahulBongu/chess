@@ -131,6 +131,38 @@ export function resetCalibrationPoints(): NormalizedPoint[] {
   return [];
 }
 
+/**
+ * Reorders 4 points clockwise starting from top-left (min x+y).
+ * Allows users to fix corner ordering without resetting their selections.
+ */
+export function reorderCalibrationPoints(points: NormalizedPoint[]): NormalizedPoint[] {
+  if (points.length !== 4) {
+    return [...points];
+  }
+
+  const centerX = points.reduce((sum, p) => sum + p.x, 0) / points.length;
+  const centerY = points.reduce((sum, p) => sum + p.y, 0) / points.length;
+
+  const ordered = [...points].sort(
+    (left, right) =>
+      Math.atan2(left.y - centerY, left.x - centerX) -
+      Math.atan2(right.y - centerY, right.x - centerX),
+  );
+
+  const startIndex = ordered.reduce((bestIndex, point, index) => {
+    const best = ordered[bestIndex];
+    if (point.x + point.y < best.x + best.y) {
+      return index;
+    }
+    if (point.x + point.y === best.x + best.y && point.y < best.y) {
+      return index;
+    }
+    return bestIndex;
+  }, 0);
+
+  return [...ordered.slice(startIndex), ...ordered.slice(0, startIndex)];
+}
+
 export function isValidCalibration(points: NormalizedPoint[]): CalibrationValidation {
   if (points.length !== 4) {
     return { valid: false, reason: 'Select all four corners before confirming.' };

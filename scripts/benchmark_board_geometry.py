@@ -359,11 +359,25 @@ def run_geometry_benchmark(
 
     elapsed = time.perf_counter() - t0
 
-    def summarize_approach(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def summarize_approach(results: List[Dict[str, Any]], is_simulated: bool = False) -> Dict[str, Any]:
         n = len(results)
-        detected_cnt = sum(1 for x in results if x["detected"])
-        mean_iou = float(np.mean([x["iou"] for x in results]))
-        mean_err = float(np.mean([x["error"] for x in results]))
+        accepted_results = [x for x in results if x["detected"]]
+        accepted_cnt = len(accepted_results)
+        accepted_recall = round(accepted_cnt / n * 100, 2)
+
+        # Metrics among ACCEPTED detections only
+        if accepted_cnt > 0:
+            accepted_mean_iou = round(float(np.mean([x["iou"] for x in accepted_results])) * 100, 2)
+            accepted_mean_err = round(float(np.mean([x["error"] for x in accepted_results])) * 100, 2)
+        else:
+            accepted_mean_iou = None
+            accepted_mean_err = None
+
+        # Candidate-proposal diagnostics (evaluated across all candidates regardless of threshold)
+        proposal_cnt = sum(1 for x in results if x.get("has_candidate", x["iou"] > 0 or x["error"] < 1.0))
+        proposal_recall = round(proposal_cnt / n * 100, 2)
+        proposal_mean_iou = round(float(np.mean([x["iou"] for x in results])) * 100, 2)
+        proposal_mean_err = round(float(np.mean([x["error"] for x in results])) * 100, 2)
         iou_gt_50 = sum(1 for x in results if x["iou"] >= 0.50)
         iou_gt_70 = sum(1 for x in results if x["iou"] >= 0.70)
         reasons = Counter(x["reason"] for x in results if not x["detected"])
@@ -376,13 +390,22 @@ def run_geometry_benchmark(
         l_iou = float(np.mean([x["iou"] for x in lateral])) if lateral else 0.0
         l_err = float(np.mean([x["error"] for x in lateral])) if lateral else 1.0
 
-        return {
+        res: Dict[str, Any] = {
             "total_tested": n,
-            "detection_recall_pct": round(detected_cnt / n * 100, 2),
-            "mean_iou_pct": round(mean_iou * 100, 2),
-            "mean_corner_error_pct": round(mean_err * 100, 2),
-            "iou_ge_50_pct": round(iou_gt_50 / n * 100, 2),
-            "iou_ge_70_pct": round(iou_gt_70 / n * 100, 2),
+            "accepted_detections": {
+                "accepted_count": accepted_cnt,
+                "accepted_recall_pct": accepted_recall,
+                "accepted_mean_iou_pct": accepted_mean_iou,
+                "accepted_mean_corner_error_pct": accepted_mean_err,
+            },
+            "candidate_proposals_diagnostic": {
+                "proposal_count": proposal_cnt,
+                "proposal_recall_pct": proposal_recall,
+                "proposal_mean_iou_pct": proposal_mean_iou,
+                "proposal_mean_corner_error_pct": proposal_mean_err,
+                "proposals_iou_ge_50_pct": round(iou_gt_50 / n * 100, 2),
+                "proposals_iou_ge_70_pct": round(iou_gt_70 / n * 100, 2),
+            },
             "viewpoint_breakdown": {
                 "frontal_views_count": len(frontal),
                 "frontal_mean_iou_pct": round(f_iou * 100, 2),
@@ -394,17 +417,29 @@ def run_geometry_benchmark(
             "failure_reasons": dict(reasons.most_common(5)),
         }
 
+        if is_simulated:
+            res["simulation_disclosure"] = {
+                "is_synthetic_simulation": True,
+                "input_source": "FENiT ground-truth corner annotations with synthetic Gaussian touch perturbation",
+                "touch_noise_std_diag": 0.03,
+                "random_seed": 42,
+                "refinement_method": "local_shi_tomasi_good_features_to_track_5pct_search_window",
+                "disclosure_note": "This metric evaluates algorithm snapping on perturbed ground-truth; it is NOT measured human-operator device performance.",
+            }
+
+        return res
+
     summary = {
         "benchmark_metadata": {
             "dataset": "FENiT (Mendeley Data DOI 10.17632/wpp9xnbcp6.1)",
             "images_evaluated": total_images,
             "total_runtime_s": round(elapsed, 2),
-            "date": "2026-11-02",
+            "date": "2026-11-03",
         },
         "approach_a_production_baseline": summarize_approach(results_a),
         "approach_b_multiscale_edge_hierarchy": summarize_approach(results_b),
         "approach_c_hough_line_clustering": summarize_approach(results_c),
-        "approach_d_assisted_calibration": summarize_approach(results_d),
+        "approach_d_simulated_assisted_calibration": summarize_approach(results_d, is_simulated=True),
     }
 
     return summary
@@ -456,26 +491,40 @@ def main() -> int:
     print("========================================================================================")
     print(" GEOMETRY BENCHMARK COMPARATIVE SUMMARY (385 Real FENiT Boards)")
     print("========================================================================================")
-    header = f"{'Approach':<35} {'Recall':>8} {'Mean IoU':>10} {'Corner Err':>12} {'IoU >= 50%':>12}"
-    print(header)
-    print("-" * len(header))
+    print("\n--- Part 1: Production Accepted Detections (Threshold: Confidence >= 0.32) ---")
+    header_acc = f"{'Approach':<35} {'Accepted':>10} {'Recall':>8} {'Accepted IoU':>14} {'Accepted Err':>14}"
+    print(header_acc)
+    print("-" * len(header_acc))
+    for name, key in [
+        ("Approach A: Production Baseline", "approach_a_production_baseline"),
+        ("Approach B: Multi-Scale Edge", "approach_b_multiscale_edge_hierarchy"),
+        ("Approach C: Hough Lines", "approach_c_hough_line_clustering"),
+        ("Approach D: Simulated Calibration", "approach_d_simulated_assisted_calibration"),
+    ]:
+        s = summary[key]["accepted_detections"]
+        tot = summary[key]["total_tested"]
+        iou_str = f"{s['accepted_mean_iou_pct']:.1f}%" if s['accepted_mean_iou_pct'] is not None else "N/A (0 det)"
+        err_str = f"{s['accepted_mean_corner_error_pct']:.1f}%" if s['accepted_mean_corner_error_pct'] is not None else "N/A (0 det)"
+        print(f"{name:<35} {s['accepted_count']:>5}/{tot:<4} {s['accepted_recall_pct']:>7.1f}% {iou_str:>14} {err_str:>14}")
 
-    apps = [
-        ("Approach A: Production Baseline", summary["approach_a_production_baseline"]),
-        ("Approach B: Multi-Scale Edge", summary["approach_b_multiscale_edge_hierarchy"]),
-        ("Approach C: Hough Lines", summary["approach_c_hough_line_clustering"]),
-        ("Approach D: Assisted Calibration", summary["approach_d_assisted_calibration"]),
-    ]
-
-    for name, s in apps:
-        print(
-            f"{name:<35} {s['detection_recall_pct']:>7.1f}% {s['mean_iou_pct']:>9.1f}% {s['mean_corner_error_pct']:>11.1f}% {s['iou_ge_50_pct']:>11.1f}%"
-        )
+    print("\n--- Part 2: Candidate-Proposal Diagnostics (Raw Contour/Polygon Quality) ---")
+    header_diag = f"{'Approach':<35} {'Proposals':>10} {'Prop Rate':>10} {'Proposal IoU':>14} {'Proposal Err':>14} {'IoU >= 50%':>12}"
+    print(header_diag)
+    print("-" * len(header_diag))
+    for name, key in [
+        ("Approach A: Production Baseline", "approach_a_production_baseline"),
+        ("Approach B: Multi-Scale Edge", "approach_b_multiscale_edge_hierarchy"),
+        ("Approach C: Hough Lines", "approach_c_hough_line_clustering"),
+    ]:
+        s = summary[key]["candidate_proposals_diagnostic"]
+        tot = summary[key]["total_tested"]
+        print(f"{name:<35} {s['proposal_count']:>5}/{tot:<4} {s['proposal_recall_pct']:>9.1f}% {s['proposal_mean_iou_pct']:>13.1f}% {s['proposal_mean_corner_error_pct']:>13.1f}% {s['proposals_iou_ge_50_pct']:>11.1f}%")
 
     print("\n--- Failure Breakdown & Key Limitations ---")
     print("Approach A (Baseline):", summary["approach_a_production_baseline"]["failure_reasons"])
     print("Approach B (Multi-Scale):", summary["approach_b_multiscale_edge_hierarchy"]["failure_reasons"])
     print("Approach C (Hough Lines):", summary["approach_c_hough_line_clustering"]["failure_reasons"])
+    print("\n[DISCLOSURE: Approach D evaluates a synthetic touch perturbation simulation on FENiT annotations; not a measured human-operator device result.]")
 
     return 0
 

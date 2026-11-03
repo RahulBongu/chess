@@ -23,6 +23,7 @@ import {
   addCalibrationPoint,
   canAddCalibrationPoint,
   isValidCalibration,
+  reorderCalibrationPoints,
   resetCalibrationPoints,
   undoCalibrationPoint,
 } from '@/calibration';
@@ -593,6 +594,23 @@ export default function CameraSetupScreen() {
             <Text style={styles.body}>
               Tap a numbered corner to select it, then tap the image to move it. Confirm when the quadrilateral is valid.
             </Text>
+            {detectedCorners.length === 4 && !isValidCalibration(detectedCorners).valid ? (
+              <View style={{ gap: 6, alignItems: 'center' }}>
+                <Text style={styles.warning}>
+                  {isValidCalibration(detectedCorners).reason ?? 'The quadrilateral is invalid.'}
+                </Text>
+                <Pressable
+                  style={styles.secondaryButton}
+                  onPress={() => {
+                    const sorted = reorderCalibrationPoints(detectedCorners);
+                    setDetectedCorners(sorted);
+                    setStatusMessage('Corners sorted clockwise starting from top-left.');
+                  }}
+                  accessibilityRole="button">
+                  <Text style={styles.secondaryButtonText}>Sort corners clockwise</Text>
+                </Pressable>
+              </View>
+            ) : null}
             <View style={styles.controls}>
               <Pressable style={styles.secondaryButton} onPress={handleRetake} accessibilityRole="button">
                 <Text style={styles.secondaryButtonText}>Retake image</Text>
@@ -666,6 +684,24 @@ export default function CameraSetupScreen() {
             <Text style={points.length === 0 ? styles.disabledText : styles.secondaryButtonText}>Reset calibration</Text>
           </Pressable>
         </View>
+
+        {points.length === 4 && !isValidCalibration(points).valid ? (
+          <View style={{ gap: 6, alignItems: 'center' }}>
+            <Text style={styles.warning}>
+              {isValidCalibration(points).reason ?? 'The quadrilateral is invalid.'}
+            </Text>
+            <Pressable
+              style={styles.secondaryButton}
+              onPress={() => {
+                const sorted = reorderCalibrationPoints(points);
+                setPoints(sorted);
+                setStatusMessage('Corners sorted clockwise starting from top-left.');
+              }}
+              accessibilityRole="button">
+              <Text style={styles.secondaryButtonText}>Sort corners clockwise</Text>
+            </Pressable>
+          </View>
+        ) : null}
 
         <Pressable
           style={isValidCalibration(points).valid ? styles.primaryButton : styles.disabledButton}
