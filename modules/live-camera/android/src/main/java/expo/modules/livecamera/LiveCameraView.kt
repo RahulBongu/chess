@@ -11,6 +11,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCase
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -62,10 +63,8 @@ class LiveCameraView(
   private var pendingStart = false
 
   private val frameIntervalMs = 250L
-  private val trackingIntervalMs = 80L
-  private var trackingEnabled = true
-  private var trackingTargetWidth = 160
-  private var trackingTargetHeight = 120
+  // trackingIntervalMs / trackingEnabled / trackingTargetWidth / trackingTargetHeight
+  // are public props (see LiveCameraModule) with setters below.
 
   init {
     previewView.setOnHierarchyChangeListener(object : ViewGroup.OnHierarchyChangeListener {
@@ -384,7 +383,7 @@ class LiveCameraView(
       this.trackingAnalysis = trackingAnalysis
 
       try {
-        val useCases = mutableListOf<Any>(preview)
+        val useCases = mutableListOf<UseCase>(preview)
         if (analysis != null) useCases.add(analysis)
         if (trackingAnalysis != null) useCases.add(trackingAnalysis)
         camera = provider.bindToLifecycle(
