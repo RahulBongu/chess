@@ -11,8 +11,16 @@ import type { Point2D } from './perspectiveOverlay.ts';
 
 export type TrackingState = 'uncalibrated' | 'tracking' | 'holding' | 'lost';
 
+/** Frame-quality hints supplied by the live camera pipeline. */
+export interface TrackerFrameQuality {
+  /** True when the frame is too blurred for reliable corner evidence. */
+  motionBlur?: boolean;
+  /** Confidence that the square grid matches the board for this frame (0..1). */
+  alignmentConfidence?: number;
+}
+
 export interface BoardTrackerOptions {
-  /** Smoothing factor alpha for EMA. Higher = more responsive, lower = smoother. Default 0.35. */
+  /** Smoothing factor alpha for EMA at the nominal 250 ms frame interval. Default 0.35. */
   smoothingFactor?: number;
   /** Maximum normalized corner distance allowed before treating as an outlier. Default 0.12. */
   maxOutlierDistance?: number;
@@ -24,6 +32,30 @@ export interface BoardTrackerOptions {
   outlierSustainMs?: number;
   /** Minimum confidence required from the motion tracker before its corners are accepted. Default 0.45. */
   minTrackedConfidence?: number;
+  /** Consistent reacquisition frames required after a discontinuity. Default 2. */
+  reacquireFrames?: number;
+  /** Maximum distance between consecutive reacquisition proposals. Default 0.05. */
+  outlierConsistencyDistance?: number;
+  /** Minimum grid alignment confidence required to accept corners. Default 0.35. */
+  minAlignmentConfidence?: number;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function cornerDistance(
+  a: [Point2D, Point2D, Point2D, Point2D],
+  b: [Point2D, Point2D, Point2D, Point2D],
+): number {
+  let maximum = 0;
+  for (let index = 0; index < 4; index += 1) {
+    maximum = Math.max(
+      maximum,
+      Math.hypot(a[index].x - b[index].x, a[index].y - b[index].y),
+    );
+  }
+  return maximum;
 }
 
 export class BoardTracker {
@@ -36,6 +68,8 @@ export class BoardTracker {
   private firstOutlierTimeMs: number | null = null;
   private lastObservedTimeMs: number | null = null;
   private pendingOutlierCorners: [Point2D, Point2D, Point2D, Point2D] | null = null;
+  private outlierConfirmationCount = 0;
+  private holdReason: string | null = null;
   private isLocked = false;
 
   private readonly smoothingFactor: number;
@@ -44,6 +78,9 @@ export class BoardTracker {
   private readonly gracePeriodMs: number;
   private readonly outlierSustainMs: number;
   private readonly minTrackedConfidence: number;
+  private readonly reacquireFrames: number;
+  private readonly outlierConsistencyDistance: number;
+  private readonly minAlignmentConfidence: number;
 
   constructor(options: BoardTrackerOptions = {}) {
     this.smoothingFactor = options.smoothingFactor ?? 0.35;
@@ -52,6 +89,9 @@ export class BoardTracker {
     this.gracePeriodMs = options.gracePeriodMs ?? 2000;
     this.outlierSustainMs = options.outlierSustainMs ?? 750;
     this.minTrackedConfidence = options.minTrackedConfidence ?? 0.45;
+    this.reacquireFrames = Math.max(2, Math.floor(options.reacquireFrames ?? 2));
+    this.outlierConsistencyDistance = options.outlierConsistencyDistance ?? 0.05;
+    this.minAlignmentConfidence = options.minAlignmentConfidence ?? 0.35;
   }
 
   /**
@@ -81,6 +121,8 @@ export class BoardTracker {
     this.firstOutlierTimeMs = null;
     this.lastObservedTimeMs = now;
     this.pendingOutlierCorners = null;
+    this.outlierConfirmationCount = 0;
+    this.holdReason = null;
     return true;
   }
 
@@ -106,6 +148,8 @@ export class BoardTracker {
    *   when no usable detection is present.
    * @param trackedConfidence Motion tracker quality in 0..1; proposals below
    *   `minTrackedConfidence` are ignored.
+   * @param quality Frame-quality hints. Blurred or misaligned frames are never
+   *   allowed to move the corners; the tracker holds the last good fix.
    *
    * A held quadrilateral is never presented as fresh tracking: when neither
    * input yields a usable proposal the tracker degrades to HOLDING (within
@@ -118,12 +162,27 @@ export class BoardTracker {
     nowMs?: number,
     trackedCorners: Point2D[] | null = null,
     trackedConfidence = 0,
+    quality: TrackerFrameQuality = {},
   ): TrackingState {
     if (this.isLocked && this.corners) {
       return this.state;
     }
 
+    const hasExplicitTime = typeof nowMs === 'number';
     const now = nowMs ?? Date.now();
+
+    const degradedReason =
+      quality.motionBlur === true
+        ? 'motion blur'
+        : quality.alignmentConfidence !== undefined &&
+            Number.isFinite(quality.alignmentConfidence) &&
+            quality.alignmentConfidence < this.minAlignmentConfidence
+          ? 'grid misaligned'
+          : null;
+
+    if (degradedReason) {
+      return this.applyQualityHold(degradedReason, now, hasExplicitTime);
+    }
 
     const isValidDetected =
       detectedCorners &&
@@ -168,6 +227,9 @@ export class BoardTracker {
         this.outlierSpikeCount = 0;
         this.firstOutlierTimeMs = null;
         this.lastObservedTimeMs = now;
+        this.pendingOutlierCorners = null;
+        this.outlierConfirmationCount = 0;
+        this.holdReason = null;
         return this.state;
       }
 
@@ -183,8 +245,16 @@ export class BoardTracker {
       }
 
       if (maxDist <= this.maxOutlierDistance) {
-        // Normal handheld motion: apply EMA smoothing
-        const alpha = this.smoothingFactor;
+        // Ordinary handheld motion: smooth with a time-aware EMA. A fixed
+        // alpha would over-smooth a fast pan and lag a slow drift, so the
+        // per-frame factor is derived from elapsed time when available.
+        const alpha = hasExplicitTime
+          ? clamp(
+              1 - Math.pow(1 - this.smoothingFactor, this.elapsedSinceObserved(now) / 250),
+              0.08,
+              0.9,
+            )
+          : this.smoothingFactor;
         const smoothed: [Point2D, Point2D, Point2D, Point2D] = [
           {
             x: (1 - alpha) * this.corners[0].x + alpha * newCorners[0].x,
@@ -218,29 +288,51 @@ export class BoardTracker {
         this.firstOutlierTimeMs = null;
         this.lastObservedTimeMs = now;
         this.pendingOutlierCorners = null;
+        this.outlierConfirmationCount = 0;
+        this.holdReason = null;
         return this.state;
       }
 
-      // Large displacement detected: could be a sudden hand crossing or intentional pan
-      this.outlierSpikeCount += 1;
-      if (this.firstOutlierTimeMs === null) {
+      // Large displacement detected: could be a sudden hand crossing or an
+      // intentional pan. Adapt only after two consecutive proposals agree on
+      // the new location (or after the sustained-time fallback), never on a
+      // single blown-up frame.
+      const consistentWithPending =
+        this.pendingOutlierCorners !== null &&
+        cornerDistance(newCorners, this.pendingOutlierCorners) <=
+          this.outlierConsistencyDistance;
+
+      if (consistentWithPending) {
+        this.outlierConfirmationCount += 1;
+        this.outlierSpikeCount += 1;
+      } else {
+        this.pendingOutlierCorners = newCorners;
+        this.outlierConfirmationCount = 1;
+        this.outlierSpikeCount = 1;
         this.firstOutlierTimeMs = now;
       }
-      this.pendingOutlierCorners = newCorners;
 
-      const outlierDuration = now - this.firstOutlierTimeMs;
-      if (outlierDuration >= this.outlierSustainMs || this.outlierSpikeCount >= 3) {
-        // Sustained shift across time threshold: adapt to the new board position
+      const outlierDuration = now - (this.firstOutlierTimeMs ?? now);
+      if (
+        this.outlierConfirmationCount >= this.reacquireFrames ||
+        outlierDuration >= this.outlierSustainMs
+      ) {
+        // Sustained, consistent shift: adopt the new board position.
         this.corners = newCorners;
         this.outlierSpikeCount = 0;
         this.firstOutlierTimeMs = null;
         this.pendingOutlierCorners = null;
+        this.outlierConfirmationCount = 0;
         this.state = 'tracking';
         this.consecutiveLostFrames = 0;
+        this.consecutiveDetectedFrames += 1;
         this.lastObservedTimeMs = now;
+        this.confidence = Math.max(0.5, observedConfidence);
+        this.holdReason = null;
       } else {
-        // Single spike: hold current position and maintain tracking
+        // Single spike: hold current position instead of warping to it.
         this.state = 'holding';
+        this.holdReason = `board discontinuity (${this.outlierConfirmationCount}/${this.reacquireFrames})`;
       }
 
       return this.state;
@@ -252,10 +344,15 @@ export class BoardTracker {
     this.outlierSpikeCount = 0;
     this.firstOutlierTimeMs = null;
     this.pendingOutlierCorners = null;
+    this.outlierConfirmationCount = 0;
 
     if (!this.corners) {
-      this.state = 'uncalibrated';
+      // Stay LOST once the grace period has actually expired. Reporting
+      // "uncalibrated" again makes a temporary dropout look like the board was
+      // never found and loses the reacquisition signal the UI depends on.
+      this.state = this.state === 'lost' ? 'lost' : 'uncalibrated';
       this.confidence = 0;
+      this.holdReason = 'no board detection';
       return this.state;
     }
 
@@ -269,6 +366,7 @@ export class BoardTracker {
     if (withinTimeBound && withinFrameBound) {
       this.state = 'holding';
       this.confidence = Math.max(0, this.confidence * 0.9);
+      this.holdReason = 'board not detected';
       return this.state;
     }
 
@@ -276,6 +374,51 @@ export class BoardTracker {
     this.state = 'lost';
     this.confidence = 0;
     this.corners = null;
+    this.holdReason = 'tracking lost';
+    return this.state;
+  }
+
+  private elapsedSinceObserved(now: number): number {
+    if (this.lastObservedTimeMs === null) return 250;
+    return Math.max(1, now - this.lastObservedTimeMs);
+  }
+
+  private applyQualityHold(
+    reason: string,
+    now: number,
+    hasExplicitTime: boolean,
+  ): TrackingState {
+    this.consecutiveDetectedFrames = 0;
+    this.outlierSpikeCount = 0;
+    this.firstOutlierTimeMs = null;
+    this.pendingOutlierCorners = null;
+    this.outlierConfirmationCount = 0;
+
+    if (!this.corners) {
+      this.state = 'uncalibrated';
+      this.confidence = 0;
+      this.holdReason = reason;
+      return this.state;
+    }
+
+    this.consecutiveLostFrames += 1;
+    const elapsedLostMs = this.lastObservedTimeMs !== null ? now - this.lastObservedTimeMs : 0;
+    const withinTimeBound = elapsedLostMs <= this.gracePeriodMs;
+    const withinFrameBound = this.consecutiveLostFrames <= this.gracePeriodFrames;
+
+    if (withinTimeBound && withinFrameBound) {
+      this.state = 'holding';
+      // Decay the fix slightly, but never present it as fresh tracking.
+      const decay = hasExplicitTime ? Math.max(0.9, 1 - this.elapsedSinceObserved(now) / 4000) : 0.9;
+      this.confidence = Math.max(0, this.confidence * decay);
+      this.holdReason = reason;
+      return this.state;
+    }
+
+    this.state = 'lost';
+    this.confidence = 0;
+    this.corners = null;
+    this.holdReason = `${reason}; tracking lost`;
     return this.state;
   }
 
@@ -314,6 +457,20 @@ export class BoardTracker {
     return this.lastObservedTimeMs;
   }
 
+  /** Why the tracker is holding, or null while tracking normally. */
+  getHoldReason(): string | null {
+    return this.holdReason;
+  }
+
+  /** Discontinuity reacquisition progress, for telemetry and tests. */
+  getReacquireProgress(): { confirmations: number; required: number } | null {
+    if (this.pendingOutlierCorners === null) return null;
+    return {
+      confirmations: this.outlierConfirmationCount,
+      required: this.reacquireFrames,
+    };
+  }
+
   reset(): void {
     this.corners = null;
     this.state = 'uncalibrated';
@@ -324,6 +481,8 @@ export class BoardTracker {
     this.firstOutlierTimeMs = null;
     this.lastObservedTimeMs = null;
     this.pendingOutlierCorners = null;
+    this.outlierConfirmationCount = 0;
+    this.holdReason = null;
     this.isLocked = false;
   }
 }

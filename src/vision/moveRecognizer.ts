@@ -49,6 +49,23 @@ export interface SquareObservation {
    * uses piece-aware reconciliation instead of occupancy-only deltas.
    */
   classProbabilities?: number[];
+  /**
+   * True when temporal fusion could not assign a confident class. The
+   * probabilities are still present; callers must not treat the top class as
+   * a confirmed piece identity.
+   */
+  uncertain?: boolean;
+  /** Where the accepted value came from. */
+  provenance?: 'observed' | 'inferred';
+  /** Fused probability that the square is occupied (1 - P(empty)). */
+  occupiedProbability?: number;
+  /** Fused colour mass conditional on the square being occupied. */
+  whiteProbability?: number;
+  blackProbability?: number;
+  /** Number of retained frames contributing evidence to this square. */
+  evidenceFrames?: number;
+  /** Timestamp of the most recent frame that observed this square. */
+  lastObservedMs?: number;
 }
 
 export interface RecognizedMove {
@@ -72,6 +89,13 @@ export interface MoveRecognitionResult {
   message: string;
   stableFrames: number;
   pendingPromotion?: PendingPromotion | null;
+  /**
+   * A legal, uniquely-supported move that is not yet strong enough to commit
+   * because one or more changed squares are still uncertain. The confirmed
+   * FEN is unchanged while this is present.
+   */
+  provisionalMove?: RecognizedMove | null;
+  provisionalStreak?: number;
   unmatchedDeltas?: {
     emptied: ChessSquare[];
     filled: ChessSquare[];
@@ -88,6 +112,8 @@ export interface MoveRecognizerOptions {
   minDeltaConfidence?: number;
   /** Minimum visibility (0..1) required for a changed square to count as evidence. Default 0.60. */
   minDeltaVisibility?: number;
+  /** Consecutive unanimous provisional candidates required before committing. Default 2. */
+  provisionalConfirmations?: number;
   initialFen?: string;
 }
 
@@ -103,20 +129,29 @@ export class MoveRecognizer {
   private pendingPromotion: PendingPromotion | null = null;
   private pendingObservations: SquareObservation[] | null = null;
   private previousTopClasses: (PieceClass | null)[] | null = null;
-  private positionConfirmed = false;
+  private previousUncertain: boolean[] | null = null;
+  private provisionalCandidate: RecognizedMove | null = null;
+  private provisionalStreak = 0;
+  private positionConfirmed: boolean;
 
   private readonly requiredStableFrames: number;
   private readonly maxInterFrameFluctuation: number;
   private readonly minDeltaConfidence: number;
   private readonly minDeltaVisibility: number;
+  private readonly provisionalConfirmations: number;
 
   constructor(options: MoveRecognizerOptions = {}) {
     this.requiredStableFrames = options.requiredStableFrames ?? 3;
     this.maxInterFrameFluctuation = options.maxInterFrameFluctuation ?? 2;
     this.minDeltaConfidence = options.minDeltaConfidence ?? 0.60;
     this.minDeltaVisibility = options.minDeltaVisibility ?? 0.60;
+    this.provisionalConfirmations = Math.max(1, Math.floor(options.provisionalConfirmations ?? 2));
     this.game = new ChessGame(options.initialFen);
     this.lastEvaluatedFen = this.game.fen();
+    // A caller-supplied FEN is an explicit position claim (assisted setup,
+    // Board Review, deterministic playback) and counts as confirmed. Without
+    // one, the camera must prove the position before classified deltas apply.
+    this.positionConfirmed = Boolean(options.initialFen);
     this.initializeBaselineFromGame();
   }
 
@@ -127,6 +162,8 @@ export class MoveRecognizer {
     this.baseline = new Map();
     this.baselineObs = new Map();
     this.previousTopClasses = null;
+    this.previousUncertain = null;
+    this.clearProvisionalCandidate();
     const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
     for (const file of files) {
       for (let rank = 1; rank <= 8; rank += 1) {
@@ -157,11 +194,43 @@ export class MoveRecognizer {
     }
     this.previousFrame = new Map(this.baseline);
     this.previousTopClasses = this.topClassesOf(observations);
+    this.previousUncertain = new Array(64).fill(false);
     this.stableFrameCount = 0;
     this.pendingPromotion = null;
     this.pendingObservations = null;
+    this.clearProvisionalCandidate();
     this.status = 'watching';
     this.positionConfirmed = true;
+  }
+
+  private clearProvisionalCandidate(): void {
+    this.provisionalCandidate = null;
+    this.provisionalStreak = 0;
+  }
+
+  getProvisionalMove(): RecognizedMove | null {
+    return this.provisionalCandidate;
+  }
+
+  getProvisionalStreak(): number {
+    return this.provisionalStreak;
+  }
+
+  getProvisionalConfirmations(): number {
+    return this.provisionalConfirmations;
+  }
+
+  /**
+   * Pauses temporal evaluation without consuming square evidence. Blurred,
+   * misaligned or otherwise unusable frames call this so a stable-frame or
+   * provisional streak cannot advance from evidence the pipeline rejected.
+   */
+  pause(): void {
+    this.stableFrameCount = 0;
+    this.clearProvisionalCandidate();
+    if (this.positionConfirmed && this.status !== 'game_over') {
+      this.status = 'stabilizing';
+    }
   }
 
   /**
@@ -180,6 +249,7 @@ export class MoveRecognizer {
       this.game = game;
       this.lastEvaluatedFen = fen;
       this.lastMove = null;
+      this.positionConfirmed = true;
       this.setBaseline(baseline);
       return true;
     } catch {
@@ -192,8 +262,21 @@ export class MoveRecognizer {
   }
 
   private topClassesOf(observations: SquareObservation[]): (PieceClass | null)[] | null {
+    return this.analyzeTopClasses(observations)?.classes ?? null;
+  }
+
+  /**
+   * Returns the per-square top class plus the fusion uncertainty mask. The
+   * uncertainty mask lets stability tracking ignore a square whose top class
+   * is genuinely ambiguous instead of resetting the stable-frame counter on
+   * every flicker.
+   */
+  private analyzeTopClasses(
+    observations: SquareObservation[],
+  ): { classes: (PieceClass | null)[]; uncertain: boolean[] } | null {
     if (observations.length !== 64) return null;
     const classes: (PieceClass | null)[] = new Array(64).fill(null);
+    const uncertain: boolean[] = new Array(64).fill(false);
     for (const observation of observations) {
       if (!observation.classProbabilities) return null;
       const top = classProbabilitiesToTop(observation.classProbabilities);
@@ -201,9 +284,11 @@ export class MoveRecognizer {
       const file = observation.square.charCodeAt(0) - 97;
       const rank = Number(observation.square[1]);
       if (file < 0 || file > 7 || rank < 1 || rank > 8) return null;
-      classes[(8 - rank) * 8 + file] = PIECE_CLASSES[top.index];
+      const index = (8 - rank) * 8 + file;
+      classes[index] = PIECE_CLASSES[top.index];
+      uncertain[index] = observation.uncertain === true;
     }
-    return classes;
+    return { classes, uncertain };
   }
 
   /**
@@ -638,8 +723,9 @@ export class MoveRecognizer {
       };
     }
 
-    const currentTop = this.topClassesOf(observations);
-    if (!currentTop) {
+    const current = this.analyzeTopClasses(observations);
+    if (!current) {
+      this.clearProvisionalCandidate();
       this.status = 'uncertain';
       return {
         status: 'uncertain',
@@ -651,10 +737,37 @@ export class MoveRecognizer {
       };
     }
 
-    if (this.previousTopClasses) {
+    // More than three genuinely ambiguous squares invalidates the frame as
+    // move evidence. Never let a wide class/colour ambiguity be silently
+    // resolved by top-1 values: keep the confirmed position and wait.
+    const uncertainCount = current.uncertain.reduce(
+      (count, uncertain) => count + (uncertain ? 1 : 0),
+      0,
+    );
+    if (uncertainCount > 3) {
+      this.stableFrameCount = 0;
+      this.clearProvisionalCandidate();
+      this.status = 'uncertain';
+      return {
+        status: 'uncertain',
+        move: null,
+        fen: currentFen,
+        turn,
+        message: `${uncertainCount} squares are too uncertain; keeping confirmed position.`,
+        stableFrames: 0,
+      };
+    }
+    const currentTop = current.classes;
+
+    if (this.previousTopClasses && this.previousUncertain) {
       let changes = 0;
       for (let index = 0; index < 64; index += 1) {
-        if (currentTop[index] !== this.previousTopClasses[index]) changes += 1;
+        if (currentTop[index] === this.previousTopClasses[index]) continue;
+        // A genuinely ambiguous square flipping its top class is not a board
+        // transition. Only confident changes reset stability, otherwise two
+        // uncertain squares could prevent a valid move from ever settling.
+        if (current.uncertain[index] || this.previousUncertain[index]) continue;
+        changes += 1;
       }
       if (changes > 0) {
         this.stableFrameCount = 0;
@@ -663,6 +776,8 @@ export class MoveRecognizer {
       // between frames is a hand, a shadow, or a camera jump, not a move.
       if (changes > 4) {
         this.previousTopClasses = currentTop;
+        this.previousUncertain = current.uncertain;
+        this.clearProvisionalCandidate();
         this.status = 'occluded';
         return {
           status: 'occluded',
@@ -675,6 +790,7 @@ export class MoveRecognizer {
       }
     }
     this.previousTopClasses = currentTop;
+    this.previousUncertain = current.uncertain;
     this.stableFrameCount += 1;
 
     const expected = boardClassesFromGame(this.game);
@@ -683,6 +799,7 @@ export class MoveRecognizer {
       expected: PieceClass;
       observed: PieceClass | null;
       confidence: number;
+      uncertain: boolean;
     }[] = [];
     for (const observation of observations) {
       const file = observation.square.charCodeAt(0) - 97;
@@ -698,11 +815,13 @@ export class MoveRecognizer {
           expected: expected[boardIndex],
           observed,
           confidence: top?.probability ?? 0,
+          uncertain: observation.uncertain === true,
         });
       }
     }
 
     if (differences.length === 0) {
+      this.clearProvisionalCandidate();
       this.status = 'watching';
       return {
         status: 'watching',
@@ -714,20 +833,23 @@ export class MoveRecognizer {
       };
     }
 
-    if (differences.length > 4) {
+    const reliableDifferences = differences.filter((difference) => !difference.uncertain);
+    if (reliableDifferences.length > 4) {
       this.stableFrameCount = 0;
+      this.clearProvisionalCandidate();
       this.status = 'uncertain';
       return {
         status: 'uncertain',
         move: null,
         fen: currentFen,
         turn,
-        message: `${differences.length} squares conflict with the confirmed position; keeping it.`,
+        message: `${reliableDifferences.length} confident squares conflict with the confirmed position; keeping it.`,
         stableFrames: 0,
       };
     }
 
     if (this.stableFrameCount < this.requiredStableFrames) {
+      this.clearProvisionalCandidate();
       this.status = 'stabilizing';
       return {
         status: 'stabilizing',
@@ -739,8 +861,11 @@ export class MoveRecognizer {
       };
     }
 
-    const reconciliation = reconcileLegalMove(this.game, observations);
+    const reconciliation = reconcileLegalMove(this.game, observations, {
+      maxUncertainSquares: 3,
+    });
     if (reconciliation.reason === 'promotion' && reconciliation.best) {
+      this.clearProvisionalCandidate();
       this.pendingPromotion = {
         from: reconciliation.best.move.from,
         to: reconciliation.best.move.to,
@@ -760,6 +885,7 @@ export class MoveRecognizer {
     }
 
     if (!reconciliation.valid || !reconciliation.best) {
+      this.clearProvisionalCandidate();
       this.status = 'uncertain';
       return {
         status: 'uncertain',
@@ -774,9 +900,13 @@ export class MoveRecognizer {
     const best = reconciliation.best;
     const changed = new Set(best.changedSquares);
     const unexplained = differences.filter(
-      (difference) => !changed.has(difference.square) && difference.confidence >= 0.62,
+      (difference) =>
+        !changed.has(difference.square) &&
+        !difference.uncertain &&
+        difference.confidence >= 0.62,
     );
     if (unexplained.length > 0) {
+      this.clearProvisionalCandidate();
       this.status = 'uncertain';
       return {
         status: 'uncertain',
@@ -795,6 +925,39 @@ export class MoveRecognizer {
       };
     }
 
+    // A move whose changed squares include fused-uncertain evidence is a
+    // provisional candidate, not a commit. It must be the unique legal move
+    // for several consecutive frames before it may advance the confirmed FEN.
+    const isProvisional = reconciliation.provisional === true || best.provisional === true;
+    if (isProvisional) {
+      const candidateKey = `${best.move.from}${best.move.to}${best.move.promotion ?? ''}`;
+      const previousKey = this.provisionalCandidate
+        ? `${this.provisionalCandidate.from}${this.provisionalCandidate.to}${this.provisionalCandidate.promotion ?? ''}`
+        : null;
+      if (previousKey === candidateKey) {
+        this.provisionalStreak += 1;
+      } else {
+        this.provisionalCandidate = { ...best.move };
+        this.provisionalStreak = 1;
+      }
+
+      if (this.provisionalStreak < this.provisionalConfirmations) {
+        this.status = 'stabilizing';
+        return {
+          status: 'stabilizing',
+          move: null,
+          fen: currentFen,
+          turn,
+          message: `Position candidate ${best.move.san} (${this.provisionalStreak}/${this.provisionalConfirmations}); holding confirmed position.`,
+          stableFrames: this.stableFrameCount,
+          provisionalMove: this.provisionalCandidate,
+          provisionalStreak: this.provisionalStreak,
+        };
+      }
+    } else {
+      this.clearProvisionalCandidate();
+    }
+
     // The scored move may have come from an ep-augmented FEN. Apply it from
     // that exact source so an inferred en-passant capture is not lost.
     if (best.sourceFen !== this.game.fen()) {
@@ -805,6 +968,7 @@ export class MoveRecognizer {
         }
         this.game = source;
       } catch {
+        this.clearProvisionalCandidate();
         this.status = 'uncertain';
         return {
           status: 'uncertain',
@@ -823,6 +987,7 @@ export class MoveRecognizer {
       promotion: best.move.promotion,
     });
     if (!executed) {
+      this.clearProvisionalCandidate();
       this.status = 'uncertain';
       return {
         status: 'uncertain',
@@ -842,7 +1007,9 @@ export class MoveRecognizer {
       promotion: executed.promotion as PromotionPiece | undefined,
     };
     this.lastEvaluatedFen = nextFen;
-    this.setBaseline(observations);
+    // Seed the post-move baseline from the confirmed FEN, not from the noisy
+    // frame that triggered the commit. The FEN is the authoritative belief.
+    this.setBaseline(observationsFromFen(nextFen) ?? observations);
     this.status = this.game.isGameOver() ? 'game_over' : 'move_detected';
     return {
       status: this.status,
@@ -876,7 +1043,10 @@ export class MoveRecognizer {
     };
     this.lastEvaluatedFen = this.game.fen();
 
-    if (this.pendingObservations) {
+    const confirmedBaseline = observationsFromFen(this.lastEvaluatedFen);
+    if (confirmedBaseline) {
+      this.setBaseline(confirmedBaseline);
+    } else if (this.pendingObservations) {
       this.setBaseline(this.pendingObservations);
     } else {
       this.initializeBaselineFromGame();
@@ -946,6 +1116,8 @@ export class MoveRecognizer {
       this.lastEvaluatedFen = fen;
       this.stableFrameCount = 0;
       this.previousTopClasses = null;
+      this.previousUncertain = null;
+      this.clearProvisionalCandidate();
       this.status = this.game.isGameOver() ? 'game_over' : 'watching';
       return true;
     } catch {
@@ -969,8 +1141,10 @@ export class MoveRecognizer {
     this.stableFrameCount = 0;
     this.previousFrame = null;
     this.previousTopClasses = null;
+    this.previousUncertain = null;
     this.pendingPromotion = null;
     this.pendingObservations = null;
+    this.clearProvisionalCandidate();
     this.positionConfirmed = Boolean(fen);
     this.initializeBaselineFromGame();
   }

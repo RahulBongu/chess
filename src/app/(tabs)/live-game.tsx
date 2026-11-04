@@ -35,6 +35,8 @@ import {
 } from '@/vision/liveGuidance';
 import type { BoardOrientation, Point2D } from '@/vision/perspectiveOverlay';
 import type { SquareObservation } from '@/vision/moveRecognizer';
+import { computeFrameSharpness } from '@/vision/frameQuality';
+import { FUSION_MIN_SHARPNESS } from '@/vision/temporalFusion';
 import {
   observationsFromSquareProbabilities,
   rotateSquareProbabilities,
@@ -315,6 +317,10 @@ export default function LiveGameScreen() {
         const frameWidth = native.width;
         const frameHeight = native.height;
         const grayFrame = { width: frameWidth, height: frameHeight, data: validation.buffer };
+        // Focus is measured once per detection frame. Motion blur lowers
+        // high-frequency energy; fusion rejects those frames instead of
+        // averaging their square probabilities into the position.
+        const focus = computeFrameSharpness(validation.buffer, frameWidth, frameHeight);
         lastFrameInfoRef.current = {
           width: frameWidth,
           height: frameHeight,
@@ -449,6 +455,11 @@ export default function LiveGameScreen() {
               : null;
 
           const guidanceStart = performance.now();
+          const alignmentConfidence = detectedCorners
+            ? Math.max(0.35, Math.min(1, confidence))
+            : trackingProposal
+              ? Math.max(0, Math.min(1, trackingProposal.confidence))
+              : coordinator.getTracker().getConfidence();
           const model = await coordinator.processFrame(
             detectedCorners,
             observations,
@@ -456,6 +467,13 @@ export default function LiveGameScreen() {
             confidence,
             now,
             trackingProposal,
+            {
+              sharpness: focus.sharpness,
+              motionBlur:
+                focus.sampleCount > 0 && focus.sharpness < FUSION_MIN_SHARPNESS,
+              alignmentConfidence,
+              capturedAtMs: now,
+            },
           );
           diagnostics.record('guidance', performance.now() - guidanceStart);
           diagnostics.record('moveRecognition', model.stageTimings.recognizerMs);
@@ -489,7 +507,7 @@ export default function LiveGameScreen() {
 
           const overlayTrusted =
             model.trackingState === 'tracking' &&
-            model.positionConfirmed &&
+            model.positionState === 'POSITION_CONFIRMED' &&
             model.perspectiveGeometry.corners !== null;
           if (overlayTrusted) {
             diagnostics.counters.trustedOverlayFrames += 1;
@@ -797,6 +815,15 @@ export default function LiveGameScreen() {
     trackingDegraded || recognitionPending
       ? 'rgba(245, 158, 11, 0.4)'
       : 'rgba(0, 229, 255, 0.45)';
+  const positionStateStyle =
+    guidance?.positionState === 'POSITION_CONFIRMED'
+      ? styles.badgeSuccess
+      : guidance?.positionState === 'REACQUIRING_BOARD'
+        ? styles.badgeDefault
+        : styles.badgeWarning;
+  const positionStateLabel = guidance
+    ? guidance.positionState.replace(/_/g, ' ')
+    : 'SEARCHING';
 
   const frameInfo = lastFrameInfoRef.current;
   const viewTransform = frameInfo
@@ -818,25 +845,16 @@ export default function LiveGameScreen() {
         {/* Top HUD Header */}
         <View style={styles.hudHeader}>
           <View style={styles.badgeRow}>
-            <View
-              style={[
-                styles.statusBadge,
-                guidance?.trackingState === 'tracking' && guidance.positionConfirmed
-                  ? styles.badgeSuccess
-                  : guidance?.trackingState === 'tracking' || trackingDegraded
-                    ? styles.badgeWarning
-                    : styles.badgeDefault,
-              ]}>
-              <Text style={styles.badgeText}>
-                {guidance?.trackingState === 'tracking'
-                  ? guidance.positionConfirmed
-                    ? 'TRACKING'
-                    : 'VERIFYING'
-                  : guidance?.trackingState
-                    ? guidance.trackingState.toUpperCase()
-                    : 'SEARCHING'}
-              </Text>
+            <View style={[styles.statusBadge, positionStateStyle]}>
+              <Text style={styles.badgeText}>{positionStateLabel}</Text>
             </View>
+            {guidance && guidance.trackingState !== 'tracking' ? (
+              <View style={[styles.statusBadge, styles.badgeDefault]}>
+                <Text style={styles.badgeText}>
+                  {guidance.trackingState.toUpperCase()}
+                </Text>
+              </View>
+            ) : null}
             <Pressable
               style={styles.turnBadge}
               onPress={toggleTurn}
@@ -857,9 +875,13 @@ export default function LiveGameScreen() {
           <Text style={styles.instructionBanner}>
             {guidance?.instruction ?? status}
           </Text>
-          {guidance && !guidance.positionConfirmed ? (
+          {guidance && guidance.positionState !== 'POSITION_CONFIRMED' ? (
             <Text style={styles.warningText}>
-              Piece evidence not verified yet. Engine analysis and move arrows stay off.
+              {guidance.positionState === 'POSITION_CANDIDATE'
+                ? 'Position candidate: engine output and arrows stay off until confirmed.'
+                : guidance.positionConfirmed
+                  ? 'Engine analysis and arrows stay off until the position and grid are verified again.'
+                  : 'Piece evidence not verified yet. Engine analysis and move arrows stay off.'}
             </Text>
           ) : null}
         </View>
@@ -1154,9 +1176,29 @@ export default function LiveGameScreen() {
             {fmtLatency(diag.latency.overlayModel)}
           </Text>
           <Text style={styles.telemetryText}>
-            Status: {guidance?.recognizerStatus ?? 'ready'} · decode failures T
+            Status: {guidance?.recognizerStatus ?? 'ready'} · state {positionStateLabel} · decode failures T
             {diag.counters.trackingDecodeFailures}/D{diag.counters.detectionDecodeFailures} · busy skips{' '}
             {diag.counters.detectionSkippedBusy} · engine results {diag.counters.engineResults}
+          </Text>
+          <Text style={styles.telemetryText}>
+            Fusion: {guidance?.fusion.acceptedFrames ?? 0} accepted ·{' '}
+            {guidance?.fusion.rejectedFrames ?? 0} rejected ·{' '}
+            {guidance?.fusion.hasFullCoverage ? 'full coverage' : 'partial coverage'} · focus{' '}
+            {guidance?.fusion.sharpness !== null && guidance?.fusion.sharpness !== undefined
+              ? guidance.fusion.sharpness.toFixed(3)
+              : '—'}{' '}
+            · align{' '}
+            {guidance?.fusion.alignmentConfidence !== null &&
+            guidance?.fusion.alignmentConfidence !== undefined
+              ? guidance.fusion.alignmentConfidence.toFixed(2)
+              : '—'}{' '}
+            · last reject {guidance?.fusion.lastRejection ?? '—'}
+          </Text>
+          <Text style={styles.telemetryText}>
+            Provisional: {guidance?.provisionalMove?.san ?? '—'} ({guidance?.provisionalStreak ?? 0}
+            ) · fusion uncertain {guidance?.fusion.uncertainSquares.length ?? 0} · missing{' '}
+            {guidance?.fusion.missingSquares.length ?? 0} · resets{' '}
+            {guidance?.fusion.transitionResets ?? 0}
           </Text>
           <Text style={styles.telemetryText}>
             Pieces: {guidance?.recognition.occupiedSquares ?? 0}/32 · conf{' '}
@@ -1176,8 +1218,11 @@ export default function LiveGameScreen() {
             {guidance?.recognition.adoptionFrames ?? 0}/
             {guidance?.recognition.adoptionWindow ?? 4} · adopt{' '}
             {guidance?.recognition.adoptionStreak ?? 0}/
-            {guidance?.recognition.adoptionConfirmations ?? 2} · rejected{' '}
-            {guidance?.recognition.reason ?? '—'}
+            {guidance?.recognition.adoptionConfirmations ?? 2}
+            {guidance?.recognition.startUsedPrior
+              ? ` · prior ${guidance.recognition.startPriorResolvedSquares.length}`
+              : ''}{' '}
+            · rejected {guidance?.recognition.reason ?? '—'}
           </Text>
           <Text style={styles.telemetryText}>
             FEN: {guidance?.positionConfirmed ? guidance.fen : (guidance?.recognition.candidateFen ?? '—')}

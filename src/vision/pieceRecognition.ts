@@ -188,6 +188,8 @@ export function observationsFromSquareProbabilities(
         confidence: top.probability,
         visibility: 1,
         classProbabilities: vector.slice(),
+        uncertain: false,
+        provenance: 'observed',
       });
     }
   }
@@ -334,6 +336,8 @@ export function observationsFromFen(fen: string): SquareObservation[] | null {
         confidence: 1,
         visibility: 1,
         classProbabilities: probabilities,
+        uncertain: false,
+        provenance: 'inferred',
       });
     }
   }
@@ -371,6 +375,10 @@ export function summarizeSquareEvidence(observations: SquareObservation[]): Squa
       });
     }
 
+    if (observation.uncertain === true) {
+      uncertainSquares.push(observation.square);
+      continue;
+    }
     if (pieceClass === 'empty') continue;
     if (top.probability >= 0.34 && top.probability - top.secondProbability >= 0.06) {
       occupiedSquares += 1;
@@ -442,39 +450,143 @@ export interface StartingPositionVerification {
   /** Home-rank squares occupied by the opposite colour (orientation error). */
   wrongColorHomeErrors: number;
   totalOccupied: number;
+  /** True when genuinely uncertain squares were resolved from the expected layout. */
+  usedPrior: boolean;
+  /** Squares whose class came from the expected layout, not the classifier. */
+  priorResolvedSquares: ChessSquare[];
+}
+
+export interface StartingPositionVerificationOptions {
+  /**
+   * Genuinely uncertain squares that may be resolved from the expected layout.
+   * Default 0 (strict): no prior resolution. Callers should require repeated
+   * fused evidence before allowing more than zero; the useful maximum is 3.
+   */
+  maxUncertainSquares?: number;
+  /**
+   * Expected layout used only for uncertain squares. Only the standard
+   * starting FEN is accepted: this option must never be used to push a
+   * mid-game board back to the start.
+   */
+  priorFen?: string;
+}
+
+function expectedClassAt(game: ChessGame, square: ChessSquare): PieceClass {
+  const piece = game.pieceAt(square);
+  return piece
+    ? pieceClassFromFenChar(
+        piece.color === 'w' ? piece.type.toUpperCase() : piece.type,
+      )
+    : 'empty';
+}
+
+/** True when a square is too ambiguous to act as proof, but not contradictory. */
+function isConfidentContradiction(
+  observation: SquareObservation,
+  expected: PieceClass,
+): boolean {
+  const top = observation.classProbabilities
+    ? classProbabilitiesToTop(observation.classProbabilities)
+    : null;
+  if (!top) return false;
+  const observed = PIECE_CLASSES[top.index];
+  return (
+    observed !== expected &&
+    top.probability >= 0.8 &&
+    top.probability - top.secondProbability >= 0.4
+  );
+}
+
+function failedStartingVerification(reason: string): StartingPositionVerification {
+  return {
+    ok: false,
+    fen: '',
+    reason,
+    matchingSquares: 0,
+    whiteHomeCount: 0,
+    blackHomeCount: 0,
+    centerOccupiedCount: 0,
+    occupiedCenterSquares: [],
+    missingWhiteHomeSquares: [],
+    missingBlackHomeSquares: [],
+    wrongColorHomeErrors: 0,
+    totalOccupied: 0,
+    usedPrior: false,
+    priorResolvedSquares: [],
+  };
 }
 
 /**
  * Conclusively verifies whether the observed board matches the untouched 32-piece
  * chess starting position without relying on brittle minor-piece type classification.
  *
- * Strict requirements:
+ * Strict requirements (defaults):
  * - Central ranks 3, 4, 5, 6 (all 32 squares) must be completely empty (centerOccupied === 0).
  * - White home ranks 1 and 2 (all 16 squares) must be occupied by White pieces (whiteHome === 16).
  * - Black home ranks 7 and 8 (all 16 squares) must be occupied by Black pieces (blackHome === 16).
  * - Zero inverted-color pieces on home ranks.
  * - Total occupied count must be exactly 32.
  * - All 64 squares must match the starting template (matchingSquares === 64).
+ *
+ * The starting layout may be used as a *prior* only when the caller explicitly
+ * allows a bounded number of genuinely uncertain squares. Confident
+ * contradictions still block, and the caller must still require explicit user
+ * confirmation before adopting STARTING_FEN.
  */
 export function verifyStartingPosition(
   observations: SquareObservation[],
   orientation: BoardOrientation = 'white_bottom',
+  options: StartingPositionVerificationOptions = {},
 ): StartingPositionVerification {
+  const maxUncertainSquares = Math.max(0, Math.floor(options.maxUncertainSquares ?? 0));
+  const priorFen = options.priorFen ?? STARTING_FEN;
+
   if (observations.length !== 64) {
+    return failedStartingVerification(
+      `Expected 64 square observations, got ${observations.length}`,
+    );
+  }
+
+  let priorGame: ChessGame | null = null;
+  if (maxUncertainSquares > 0) {
+    if (priorFen !== STARTING_FEN) {
+      return failedStartingVerification(
+        'Only the standard starting layout may be used as a prior.',
+      );
+    }
+    try {
+      priorGame = new ChessGame(priorFen);
+      if (priorGame.fen() !== priorFen) {
+        return failedStartingVerification('The expected starting layout is not a legal position.');
+      }
+    } catch {
+      return failedStartingVerification('The expected starting layout is not a legal position.');
+    }
+  }
+
+  const uncertainSquares = observations
+    .filter((observation) => observation.uncertain === true)
+    .map((observation) => observation.square);
+  if (uncertainSquares.length > maxUncertainSquares) {
     return {
-      ok: false,
-      fen: '',
-      reason: `Expected 64 square observations, got ${observations.length}`,
-      matchingSquares: 0,
-      whiteHomeCount: 0,
-      blackHomeCount: 0,
-      centerOccupiedCount: 0,
-      occupiedCenterSquares: [],
-      missingWhiteHomeSquares: [],
-      missingBlackHomeSquares: [],
-      wrongColorHomeErrors: 0,
-      totalOccupied: 0,
+      ...failedStartingVerification(
+        `${uncertainSquares.length} square${uncertainSquares.length === 1 ? '' : 's'} too uncertain to verify a starting position.`,
+      ),
     };
+  }
+
+  if (priorGame) {
+    for (const observation of observations) {
+      if (observation.uncertain !== true) continue;
+      const expected = expectedClassAt(priorGame, observation.square);
+      if (isConfidentContradiction(observation, expected)) {
+        return {
+          ...failedStartingVerification(
+            `Confident evidence on ${observation.square} contradicts the expected starting layout.`,
+          ),
+        };
+      }
+    }
   }
 
   let whiteHomeCount = 0;
@@ -488,17 +600,29 @@ export function verifyStartingPosition(
   const occupiedCenterSquares: ChessSquare[] = [];
   const missingWhiteHomeSquares: ChessSquare[] = [];
   const missingBlackHomeSquares: ChessSquare[] = [];
+  const priorResolvedSquares: ChessSquare[] = [];
 
   for (const obs of observations) {
     const { rank } = squareFileRank(obs.square);
     const top = obs.classProbabilities
       ? classProbabilitiesToTop(obs.classProbabilities)
       : null;
-    const pieceClass = top ? PIECE_CLASSES[top.index] : 'empty';
+    const observedClass = top ? PIECE_CLASSES[top.index] : 'empty';
+    const flaggedUncertain = obs.uncertain === true;
+    let effectiveClass = observedClass;
 
-    const isWhite = pieceClass.startsWith('white_') || obs.color === 'w';
-    const isBlack = pieceClass.startsWith('black_') || obs.color === 'b';
-    const isEmpty = pieceClass === 'empty' && !obs.occupied;
+    if (flaggedUncertain && priorGame) {
+      effectiveClass = expectedClassAt(priorGame, obs.square);
+      priorResolvedSquares.push(obs.square);
+    }
+
+    const useObservedColor = !(flaggedUncertain && priorGame);
+    const isWhite =
+      effectiveClass.startsWith('white_') || (useObservedColor && obs.color === 'w');
+    const isBlack =
+      effectiveClass.startsWith('black_') || (useObservedColor && obs.color === 'b');
+    const isEmpty =
+      effectiveClass === 'empty' && (flaggedUncertain && priorGame ? true : !obs.occupied);
 
     if (!isEmpty) {
       totalOccupied += 1;
@@ -576,6 +700,8 @@ export function verifyStartingPosition(
     missingBlackHomeSquares,
     wrongColorHomeErrors,
     totalOccupied,
+    usedPrior: priorResolvedSquares.length > 0,
+    priorResolvedSquares,
   };
 }
 
@@ -662,12 +788,21 @@ export function recognizePositionFromObservations(
     const pieceClass = PIECE_CLASSES[top.index];
     const { file, rank } = squareFileRank(observation.square);
     const row = 8 - rank;
+    const flaggedUncertain = observation.uncertain === true;
     const occupiedCandidate =
+      !flaggedUncertain &&
       pieceClass !== 'empty' &&
       top.probability >= minPieceProbability &&
       top.probability - top.secondProbability >= minPieceMargin;
 
-    if (pieceClass !== 'empty' && !occupiedCandidate) {
+    if (flaggedUncertain) {
+      // Never invent an identity (or an empty square) from evidence fusion has
+      // already declared ambiguous. The structural gate still decides whether
+      // the surrounding board is plausible, and the caller's uncertainty
+      // budget decides whether it may be adopted at all.
+      uncertainSquares.push(observation.square);
+      board[row][file] = 'empty';
+    } else if (pieceClass !== 'empty' && !occupiedCandidate) {
       uncertainSquares.push(observation.square);
       board[row][file] = 'empty';
     } else {
@@ -897,9 +1032,15 @@ export interface MoveEvidenceScore {
   score: number;
   coreProbability: number;
   changedSquares: ChessSquare[];
+  /** Changed squares whose fused evidence is confident. */
+  reliableChangedSquares: ChessSquare[];
+  /** Changed squares resolved by fusion as genuinely uncertain. */
+  uncertainChangedSquares: ChessSquare[];
   sourceEmptyProbability: number;
   destinationPieceProbability: number;
   unexpectedChanges: ChessSquare[];
+  /** True when the candidate relies on at least one uncertain changed square. */
+  provisional: boolean;
   valid: boolean;
   reason: string | null;
 }
@@ -910,6 +1051,10 @@ export interface PieceAwareReconciliation {
   promotionCandidates: MoveEvidenceScore[];
   valid: boolean;
   reason: string | null;
+  /** All fused-uncertain squares supplied with this observation set. */
+  uncertainSquares: ChessSquare[];
+  /** True when the best candidate needs provisional confirmation. */
+  provisional: boolean;
 }
 
 export interface ReconcileOptions {
@@ -919,6 +1064,13 @@ export interface ReconcileOptions {
   minLogMargin?: number;
   /** Maximum high-confidence observed changes outside the candidate move. */
   maxUnexpectedChanges?: number;
+  /** Maximum fused-uncertain squares tolerated in the observation set. Default 0. */
+  maxUncertainSquares?: number;
+  /**
+   * Minimum number of confident changed squares a candidate needs. Default 1;
+   * a provisional candidate must still have at least one reliable arrival.
+   */
+  minReliableChangedSquares?: number;
 }
 
 /**
@@ -933,12 +1085,43 @@ export function reconcileLegalMove(
   const minCoreProbability = options.minCoreProbability ?? 0.28;
   const minLogMargin = options.minLogMargin ?? 0.22;
   const maxUnexpectedChanges = options.maxUnexpectedChanges ?? 1;
+  const maxUncertainSquares = Math.max(0, Math.floor(options.maxUncertainSquares ?? 0));
+  const minReliableChangedSquares = Math.max(
+    1,
+    Math.floor(options.minReliableChangedSquares ?? 1),
+  );
 
   if (observations.length !== 64) {
-    return { best: null, second: null, promotionCandidates: [], valid: false, reason: 'Expected 64 observations.' };
+    return {
+      best: null,
+      second: null,
+      promotionCandidates: [],
+      valid: false,
+      reason: 'Expected 64 observations.',
+      uncertainSquares: [],
+      provisional: false,
+    };
   }
   const bySquare = new Map<ChessSquare, SquareObservation>();
   for (const observation of observations) bySquare.set(observation.square, observation);
+
+  const uncertainSquares = new Set<ChessSquare>(
+    observations
+      .filter((observation) => observation.uncertain === true)
+      .map((observation) => observation.square),
+  );
+  const uncertainList = [...uncertainSquares];
+  if (uncertainSquares.size > maxUncertainSquares) {
+    return {
+      best: null,
+      second: null,
+      promotionCandidates: [],
+      valid: false,
+      reason: `${uncertainSquares.size} uncertain square${uncertainSquares.size === 1 ? '' : 's'} exceed the ${maxUncertainSquares}-square limit.`,
+      uncertainSquares: uncertainList,
+      provisional: false,
+    };
+  }
 
   const before = boardClassesFromGame(game);
   const bySquareForEp = new Map<ChessSquare, SquareObservation>();
@@ -973,7 +1156,15 @@ export function reconcileLegalMove(
     }
   }
   if (legalMoves.length === 0) {
-    return { best: null, second: null, promotionCandidates: [], valid: false, reason: 'No legal moves.' };
+    return {
+      best: null,
+      second: null,
+      promotionCandidates: [],
+      valid: false,
+      reason: 'No legal moves.',
+      uncertainSquares: uncertainList,
+      provisional: false,
+    };
   }
 
   const scores: MoveEvidenceScore[] = [];
@@ -990,6 +1181,9 @@ export function reconcileLegalMove(
     const after = boardClassesFromGame(child);
 
     const changedSquares: ChessSquare[] = [];
+    const changedIndices: number[] = [];
+    const reliableChangedSquares: ChessSquare[] = [];
+    const uncertainChangedSquares: ChessSquare[] = [];
     const coreLogs: number[] = [];
     let sourceEmptyProbability = 0;
     let destinationPieceProbability = 0;
@@ -1002,12 +1196,23 @@ export function reconcileLegalMove(
       const expected = after[index];
       const p = probability(bySquare.get(square), expected);
       changedSquares.push(square);
-      coreLogs.push(Math.log(Math.max(p, 1e-6)));
+      changedIndices.push(index);
+      if (uncertainSquares.has(square)) {
+        // Fusion already declared this square ambiguous. Do not let its top
+        // class masquerade as positive proof for the candidate.
+        uncertainChangedSquares.push(square);
+      } else {
+        reliableChangedSquares.push(square);
+        coreLogs.push(Math.log(Math.max(p, 1e-6)));
+      }
       if (square === from) sourceEmptyProbability = p;
       if (square === to) destinationPieceProbability = p;
     }
-    if (coreLogs.length === 0) continue;
-    coreProbability = Math.exp(coreLogs.reduce((sum, value) => sum + value, 0) / coreLogs.length);
+    if (changedSquares.length === 0) continue;
+    coreProbability =
+      coreLogs.length > 0
+        ? Math.exp(coreLogs.reduce((sum, value) => sum + value, 0) / coreLogs.length)
+        : 0;
 
     const changedSet = new Set(changedSquares);
     const unexpectedChanges: ChessSquare[] = [];
@@ -1022,19 +1227,37 @@ export function reconcileLegalMove(
       const topInfo = observation?.classProbabilities
         ? classProbabilitiesToTop(observation.classProbabilities)
         : null;
+      // A confident contradiction blocks even when the square is flagged
+      // uncertain: an uncertain *empty* square cannot excuse a confident
+      // opposite-colour piece elsewhere.
       if (topInfo && topInfo.probability >= 0.72 && topInfo.probability - topInfo.secondProbability >= 0.3) {
         unexpectedChanges.push(square);
       }
     }
 
+    const provisional = uncertainChangedSquares.length > 0;
+    const fromUncertain = uncertainSquares.has(from);
+    const toUncertain = uncertainSquares.has(to);
+    const hasReliableArrival = reliableChangedSquares.some((square) => {
+      const index =
+        (8 - Number(square[1])) * 8 + (square.charCodeAt(0) - 97);
+      return after[index] !== 'empty';
+    });
+
     let valid = true;
     let reason: string | null = null;
-    if (changedSet.has(from) && sourceEmptyProbability < 0.25) {
+    if (!fromUncertain && changedSet.has(from) && sourceEmptyProbability < 0.25) {
       valid = false;
       reason = `Source ${from} was not observed as empty.`;
-    } else if (changedSet.has(to) && destinationPieceProbability < 0.2) {
+    } else if (!toUncertain && changedSet.has(to) && destinationPieceProbability < 0.2) {
       valid = false;
       reason = `Destination ${to} does not match the moving piece.`;
+    } else if (reliableChangedSquares.length < minReliableChangedSquares) {
+      valid = false;
+      reason = 'Too few confident changed squares support this move.';
+    } else if (provisional && !hasReliableArrival) {
+      valid = false;
+      reason = 'Only an emptied source was reliably observed; the arriving piece is unknown.';
     } else if (coreProbability < minCoreProbability) {
       valid = false;
       reason = `Changed-square evidence too weak (${(coreProbability * 100).toFixed(1)}%).`;
@@ -1051,12 +1274,18 @@ export function reconcileLegalMove(
         promotion: executed.promotion as PromotionPiece | undefined,
       },
       sourceFen: source.fen(),
-      score: coreLogs.reduce((sum, value) => sum + value, 0) / coreLogs.length,
+      score:
+        coreLogs.length > 0
+          ? coreLogs.reduce((sum, value) => sum + value, 0) / coreLogs.length
+          : Number.NEGATIVE_INFINITY,
       coreProbability,
       changedSquares,
+      reliableChangedSquares,
+      uncertainChangedSquares,
       sourceEmptyProbability,
       destinationPieceProbability,
       unexpectedChanges,
+      provisional,
       valid,
       reason,
     });
@@ -1070,6 +1299,8 @@ export function reconcileLegalMove(
       promotionCandidates: [],
       valid: false,
       reason: scores[0]?.reason ?? 'No legal move matches the observed board.',
+      uncertainSquares: uncertainList,
+      provisional: false,
     };
   }
   const best = validScores[0];
@@ -1087,6 +1318,8 @@ export function reconcileLegalMove(
       promotionCandidates,
       valid: false,
       reason: 'promotion',
+      uncertainSquares: uncertainList,
+      provisional: best.provisional,
     };
   }
 
@@ -1097,7 +1330,17 @@ export function reconcileLegalMove(
       promotionCandidates: [],
       valid: false,
       reason: `Ambiguous between ${best.move.san} and ${second.move.san}.`,
+      uncertainSquares: uncertainList,
+      provisional: best.provisional || second.provisional,
     };
   }
-  return { best, second, promotionCandidates: [], valid: true, reason: null };
+  return {
+    best,
+    second,
+    promotionCandidates: [],
+    valid: true,
+    reason: null,
+    uncertainSquares: uncertainList,
+    provisional: best.provisional,
+  };
 }
