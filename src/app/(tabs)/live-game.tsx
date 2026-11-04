@@ -1024,6 +1024,22 @@ export default function LiveGameScreen() {
             </Text>
           </Pressable>
 
+          {active && guidance?.startReady && !guidance.positionConfirmed ? (
+            <Pressable
+              style={styles.primaryButton}
+              onPress={() => {
+                const ok = coordinatorRef.current?.confirmStartingPosition() ?? false;
+                if (ok) {
+                  positionConfirmedRef.current = true;
+                  setStatus('Standard starting position confirmed. Engine guidance enabled.');
+                } else {
+                  setStatus('Could not adopt the starting position. Review the board and try again.');
+                }
+              }}>
+              <Text style={styles.buttonText}>Confirm Start</Text>
+            </Pressable>
+          ) : null}
+
           {active && !guidance?.positionConfirmed ? (
             <Pressable
               style={styles.utilityButton}

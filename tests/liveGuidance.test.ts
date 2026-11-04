@@ -288,6 +288,7 @@ test('requirePositionEvidence keeps engine and arrows off until a classified pos
     orientation: 'white_bottom',
     initialTurn: 'w',
     requirePositionEvidence: true,
+    initializationMode: 'arbitrary_position',
   });
 
   // Occupancy-only observations must never confirm a position or start the
@@ -367,6 +368,7 @@ test('adoption averaging absorbs a one-frame misclassification before confirming
     requirePositionEvidence: true,
     adoptionWindow: 4,
     adoptionConfirmations: 2,
+    initializationMode: 'arbitrary_position',
   });
 
   const start = classifiedObservations(STARTING_FEN);
@@ -392,6 +394,7 @@ test('adoption evidence resets on occlusion, orientation, and turn changes', asy
     requirePositionEvidence: true,
     adoptionWindow: 4,
     adoptionConfirmations: 2,
+    initializationMode: 'arbitrary_position',
   });
   const start = classifiedObservations(STARTING_FEN);
 
@@ -451,6 +454,7 @@ test('classified move recognition never revives stale engine analysis', async ()
     engine,
     initialTurn: 'w',
     requirePositionEvidence: true,
+    initializationMode: 'arbitrary_position',
   });
 
   const start = classifiedObservations(STARTING_FEN);

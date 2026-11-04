@@ -110,6 +110,8 @@ export interface LiveGuidanceModel {
   pendingPromotion: PendingPromotion | null;
   /** Piece-aware board adoption and classifier telemetry. */
   positionConfirmed: boolean;
+  /** True when camera observations conclusively verify the standard 32-piece starting setup. */
+  startReady: boolean;
   initializationMode: 'standard_start' | 'arbitrary_position';
   recognition: LiveRecognitionState;
   /** Stage timings for this frame (JS pipeline only). */
@@ -178,6 +180,8 @@ export class LiveGuidanceCoordinator {
   private adoptionFrames: SquareObservation[][] = [];
   private turnHint: 'w' | 'b';
   private positionConfirmed: boolean;
+  /** Visual evidence matches the untouched 32-piece start; awaiting explicit user confirmation. */
+  private startVerified = false;
   private adoptionStreak = 0;
   private adoptionCandidateFen: string | null = null;
   /** Best-effort placement offered to the assisted editor; never auto-adopted. */
@@ -237,6 +241,27 @@ export class LiveGuidanceCoordinator {
 
   isPositionConfirmed(): boolean {
     return this.positionConfirmed;
+  }
+
+  isStartVerified(): boolean {
+    return this.startVerified && !this.positionConfirmed;
+  }
+
+  confirmStartingPosition(): boolean {
+    if (this.positionConfirmed) return true;
+    // Explicit confirmation is only valid after the current averaged frame
+    // actually verified the untouched starting layout.
+    if (!this.startVerified) return false;
+    if (this.recognizer.adoptPosition(STARTING_FEN)) {
+      this.positionConfirmed = true;
+      this.clearAdoptionEvidence();
+      this.recognitionReason = null;
+      this.currentAnalysis = null;
+      this.analyzedFen = null;
+      this.startVerified = false;
+      return true;
+    }
+    return false;
   }
 
   setInitializationMode(mode: 'standard_start' | 'arbitrary_position'): void {
@@ -405,26 +430,24 @@ export class LiveGuidanceCoordinator {
             if (averaged) {
               this.updateRecognitionSummary(averaged);
 
-              let adoptedCandidateFen: string | null = null;
-              let rejectionReason: string | null = null;
-
               if (this.initializationMode === 'standard_start') {
+                // A known starting position is only ever adopted after the
+                // layout is verified AND the user explicitly confirms it.
+                // Never auto-adopt here: a near-start position with one moved
+                // pawn can otherwise be silently replaced by STARTING_FEN.
                 const startCheck = verifyStartingPosition(averaged, this.orientation);
-                if (startCheck.ok) {
-                  adoptedCandidateFen = STARTING_FEN;
-                  this.suggestedFen = STARTING_FEN;
-                } else {
-                  // Fall back to scanning candidate for suggestion
-                  const candidate = recognizePositionFromObservations(averaged, {
-                    turn: this.turnHint,
-                  });
-                  const suggestion = candidate.ok
-                    ? candidate
-                    : suggestPositionFromObservations(averaged, { turn: this.turnHint });
-                  this.suggestedFen = suggestion.ok ? suggestion.fen : null;
-                  rejectionReason = startCheck.reason;
-                }
+                this.startVerified = startCheck.ok;
+                const suggestion = suggestPositionFromObservations(averaged, {
+                  turn: this.turnHint,
+                });
+                this.suggestedFen = suggestion.ok ? suggestion.fen : null;
+                this.adoptionStreak = 0;
+                this.adoptionCandidateFen = null;
+                this.recognitionReason = startCheck.ok
+                  ? 'Standard starting position verified. Tap Confirm Start to enable guidance.'
+                  : `${startCheck.reason ?? 'Not a standard starting position.'} Switch to Custom Board or tap Set Position.`;
               } else {
+                this.startVerified = false;
                 const candidate = recognizePositionFromObservations(averaged, {
                   turn: this.turnHint,
                   maxUncertainSquares: 0,
@@ -433,40 +456,35 @@ export class LiveGuidanceCoordinator {
                   ? candidate
                   : suggestPositionFromObservations(averaged, { turn: this.turnHint });
                 this.suggestedFen = suggestion.ok ? suggestion.fen : null;
-                if (candidate.ok) {
-                  adoptedCandidateFen = candidate.fen;
-                } else {
-                  rejectionReason = candidate.reason;
-                }
-              }
 
-              if (adoptedCandidateFen) {
-                if (this.adoptionCandidateFen === adoptedCandidateFen) {
-                  this.adoptionStreak += 1;
-                } else {
-                  this.adoptionCandidateFen = adoptedCandidateFen;
-                  this.adoptionStreak = 1;
-                }
-                this.recognitionReason =
-                  `Verifying position (${this.adoptionStreak}/${this.adoptionConfirmations})...`;
-                if (this.adoptionStreak >= this.adoptionConfirmations) {
-                  // Seed the baseline from the accepted FEN, not from the noisy
-                  // frame that produced it. Delta tracking must compare future
-                  // frames against the believed position.
-                  if (this.recognizer.adoptPosition(adoptedCandidateFen)) {
-                    this.positionConfirmed = true;
-                    this.clearAdoptionEvidence();
-                    this.recognitionReason = null;
-                    this.currentAnalysis = null;
-                    this.analyzedFen = null;
+                if (candidate.ok) {
+                  if (this.adoptionCandidateFen === candidate.fen) {
+                    this.adoptionStreak += 1;
                   } else {
-                    this.recognitionReason = 'The candidate position could not be adopted.';
+                    this.adoptionCandidateFen = candidate.fen;
+                    this.adoptionStreak = 1;
                   }
+                  this.recognitionReason =
+                    `Verifying position (${this.adoptionStreak}/${this.adoptionConfirmations})...`;
+                  if (this.adoptionStreak >= this.adoptionConfirmations) {
+                    // Seed the baseline from the accepted FEN, not from the noisy
+                    // frame that produced it. Delta tracking must compare future
+                    // frames against the believed position.
+                    if (this.recognizer.adoptPosition(candidate.fen)) {
+                      this.positionConfirmed = true;
+                      this.clearAdoptionEvidence();
+                      this.recognitionReason = null;
+                      this.currentAnalysis = null;
+                      this.analyzedFen = null;
+                    } else {
+                      this.recognitionReason = 'The candidate position could not be adopted.';
+                    }
+                  }
+                } else {
+                  this.adoptionStreak = 0;
+                  this.adoptionCandidateFen = null;
+                  this.recognitionReason = candidate.reason;
                 }
-              } else {
-                this.adoptionStreak = 0;
-                this.adoptionCandidateFen = null;
-                this.recognitionReason = rejectionReason;
               }
             } else {
               this.updateRecognitionSummary(observations);
@@ -626,6 +644,7 @@ export class LiveGuidanceCoordinator {
       isEngineAnalyzing: this.isAnalyzing,
       pendingPromotion: this.recognizer.getPendingPromotion(),
       positionConfirmed: this.positionConfirmed,
+      startReady: this.startVerified && !this.positionConfirmed,
       initializationMode: this.initializationMode,
       recognition: {
         positionConfirmed: this.positionConfirmed,
@@ -697,6 +716,7 @@ export class LiveGuidanceCoordinator {
     this.adoptionStreak = 0;
     this.adoptionCandidateFen = null;
     this.suggestedFen = null;
+    this.startVerified = false;
   }
 
   getTracker(): BoardTracker {

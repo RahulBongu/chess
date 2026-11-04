@@ -436,19 +436,25 @@ export interface StartingPositionVerification {
   whiteHomeCount: number;
   blackHomeCount: number;
   centerOccupiedCount: number;
+  occupiedCenterSquares: ChessSquare[];
+  missingWhiteHomeSquares: ChessSquare[];
+  missingBlackHomeSquares: ChessSquare[];
+  /** Home-rank squares occupied by the opposite colour (orientation error). */
+  wrongColorHomeErrors: number;
   totalOccupied: number;
 }
 
 /**
- * Conclusively verifies whether the observed board matches the standard 32-piece
+ * Conclusively verifies whether the observed board matches the untouched 32-piece
  * chess starting position without relying on brittle minor-piece type classification.
  *
- * Uses robust occupancy and piece-color evidence:
- * - Ranks 1 and 2: White pieces (>= 14/16)
- * - Ranks 7 and 8: Black pieces (>= 14/16)
- * - Ranks 3, 4, 5, 6: Completely empty (centerOccupied <= 1)
- * - Zero inverted-color pieces on home ranks
- * - Total occupied count between 28 and 32 pieces
+ * Strict requirements:
+ * - Central ranks 3, 4, 5, 6 (all 32 squares) must be completely empty (centerOccupied === 0).
+ * - White home ranks 1 and 2 (all 16 squares) must be occupied by White pieces (whiteHome === 16).
+ * - Black home ranks 7 and 8 (all 16 squares) must be occupied by Black pieces (blackHome === 16).
+ * - Zero inverted-color pieces on home ranks.
+ * - Total occupied count must be exactly 32.
+ * - All 64 squares must match the starting template (matchingSquares === 64).
  */
 export function verifyStartingPosition(
   observations: SquareObservation[],
@@ -463,6 +469,10 @@ export function verifyStartingPosition(
       whiteHomeCount: 0,
       blackHomeCount: 0,
       centerOccupiedCount: 0,
+      occupiedCenterSquares: [],
+      missingWhiteHomeSquares: [],
+      missingBlackHomeSquares: [],
+      wrongColorHomeErrors: 0,
       totalOccupied: 0,
     };
   }
@@ -474,6 +484,10 @@ export function verifyStartingPosition(
   let wrongColorHomeErrors = 0;
   let totalOccupied = 0;
   let matchingSquares = 0;
+
+  const occupiedCenterSquares: ChessSquare[] = [];
+  const missingWhiteHomeSquares: ChessSquare[] = [];
+  const missingBlackHomeSquares: ChessSquare[] = [];
 
   for (const obs of observations) {
     const { rank } = squareFileRank(obs.square);
@@ -495,16 +509,22 @@ export function verifyStartingPosition(
       if (isWhite) {
         whiteHomeCount += 1;
         matchingSquares += 1;
-      } else if (isBlack) {
-        wrongColorHomeErrors += 1;
+      } else {
+        missingWhiteHomeSquares.push(obs.square);
+        if (isBlack) {
+          wrongColorHomeErrors += 1;
+        }
       }
     } else if (rank === 7 || rank === 8) {
       // Expected Black home ranks
       if (isBlack) {
         blackHomeCount += 1;
         matchingSquares += 1;
-      } else if (isWhite) {
-        wrongColorHomeErrors += 1;
+      } else {
+        missingBlackHomeSquares.push(obs.square);
+        if (isWhite) {
+          wrongColorHomeErrors += 1;
+        }
       }
     } else {
       // Central empty ranks: 3, 4, 5, 6 (32 squares)
@@ -513,31 +533,31 @@ export function verifyStartingPosition(
         matchingSquares += 1;
       } else {
         centerOccupiedCount += 1;
+        occupiedCenterSquares.push(obs.square);
       }
     }
   }
 
   const ok =
-    centerOccupiedCount <= 1 &&
-    whiteHomeCount >= 14 &&
-    blackHomeCount >= 14 &&
+    centerOccupiedCount === 0 &&
+    whiteHomeCount === 16 &&
+    blackHomeCount === 16 &&
     wrongColorHomeErrors === 0 &&
-    totalOccupied >= 28 &&
-    totalOccupied <= 32 &&
-    matchingSquares >= 56;
+    totalOccupied === 32 &&
+    matchingSquares === 64;
 
   let reason: string | null = null;
   if (!ok) {
-    if (centerOccupiedCount > 1) {
-      reason = `Pieces detected in center (${centerOccupiedCount} squares in ranks 3-6); not a starting position.`;
+    if (centerOccupiedCount > 0) {
+      reason = `Piece detected in center (${occupiedCenterSquares.join(', ')} occupied in ranks 3-6); not an untouched starting position.`;
     } else if (wrongColorHomeErrors > 0) {
       reason = `Inverted piece color detected on home rank (${wrongColorHomeErrors} pieces). Check White/Black bottom toggle.`;
-    } else if (whiteHomeCount < 14) {
-      reason = `White home ranks (1-2) have only ${whiteHomeCount}/16 pieces detected.`;
-    } else if (blackHomeCount < 14) {
-      reason = `Black home ranks (7-8) have only ${blackHomeCount}/16 pieces detected.`;
-    } else if (totalOccupied < 28 || totalOccupied > 32) {
-      reason = `Detected piece count is ${totalOccupied}/32; not the standard starting setup.`;
+    } else if (missingWhiteHomeSquares.length > 0) {
+      reason = `White home square ${missingWhiteHomeSquares.join(', ')} is not occupied by White (expected White piece in starting setup).`;
+    } else if (missingBlackHomeSquares.length > 0) {
+      reason = `Black home square ${missingBlackHomeSquares.join(', ')} is not occupied by Black (expected Black piece in starting setup).`;
+    } else if (totalOccupied !== 32) {
+      reason = `Detected piece count is ${totalOccupied}/32; not the 32-piece starting setup.`;
     } else {
       reason = `Board layout matches ${matchingSquares}/64 starting squares.`;
     }
@@ -551,6 +571,10 @@ export function verifyStartingPosition(
     whiteHomeCount,
     blackHomeCount,
     centerOccupiedCount,
+    occupiedCenterSquares,
+    missingWhiteHomeSquares,
+    missingBlackHomeSquares,
+    wrongColorHomeErrors,
     totalOccupied,
   };
 }
