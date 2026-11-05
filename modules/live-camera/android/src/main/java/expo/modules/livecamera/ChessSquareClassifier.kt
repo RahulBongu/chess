@@ -118,6 +118,25 @@ class ChessSquareClassifier(private val context: Context) {
         }
       }
     }
+
+    // The ONNX graph declares a (batch, 3, H, W) NCHW input tensor, but
+    // sampleRgb writes pixel-major RGB triplets. Transpose HWC -> CHW once
+    // per batch so cousins such as white_pawn and black_king are not
+    // scrambled into each other's channels and spatial coordinates.
+    val transposedInput = FloatArray(SQUARE_COUNT * 3 * INPUT_SIZE * INPUT_SIZE)
+    var transposedIndex = 0
+    for (square in 0 until SQUARE_COUNT) {
+      val squareBase = square * 3 * INPUT_SIZE * INPUT_SIZE
+      for (channel in 0 until 3) {
+        for (planeIndex in 0 until INPUT_SIZE * INPUT_SIZE) {
+          val sourceIndex = squareBase + planeIndex * 3 + channel
+          transposedInput[transposedIndex] = input[sourceIndex]
+          transposedIndex += 1
+        }
+      }
+    }
+    java.util.Arrays.fill(input, 0f)
+    System.arraycopy(transposedInput, 0, input, 0, transposedInput.size)
     val cropPrepMs = System.currentTimeMillis() - prepStart
     val onnxStart = System.currentTimeMillis()
     val scores = runInput() ?: return null
