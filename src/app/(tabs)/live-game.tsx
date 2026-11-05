@@ -622,6 +622,8 @@ export default function LiveGameScreen() {
     latestTrackingProposalRef.current = null;
     latestTrackingFrameRef.current = null;
     previousRecognizerStatusRef.current = null;
+    coordinatorRef.current?.getTracker().setLocked(false);
+    coordinatorRef.current?.reset();
     lastEngineResultCountRef.current = 0;
     // Keep the final interval's numbers visible after stopping.
     setDiag(diagnosticsRef.current!.snapshot(Date.now()));
@@ -742,6 +744,7 @@ export default function LiveGameScreen() {
     coordinator.reset();
     coordinator.setTurn(turnToMove);
     coordinator.seedCorners(ordered);
+    coordinator.getTracker().setLocked(true);
     manualCalibrationRef.current = true;
     setManualCalibrated(true);
     setCalibrating(false);
@@ -760,6 +763,7 @@ export default function LiveGameScreen() {
     setManualCalibrated(false);
     setCalibrating(false);
     setCalibrationPoints([]);
+    coordinatorRef.current?.getTracker().setLocked(false);
     motionTrackerRef.current.reset();
     coordinatorRef.current?.reset();
     coordinatorRef.current?.setTurn(turnToMove);

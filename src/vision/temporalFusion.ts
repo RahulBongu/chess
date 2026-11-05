@@ -30,7 +30,7 @@ import {
   type PieceClass,
 } from './pieceRecognition.ts';
 
-export const FUSION_WINDOW_MS = 1500;
+export const FUSION_WINDOW_MS = 2500;
 export const FUSION_MAX_FRAMES = 8;
 /**
  * Recency half-life for frame weighting. Old frames still contribute (so a
@@ -465,8 +465,19 @@ export class TemporalSquareFusion {
       const beforeClass = topClassOf(before);
       const afterClass = topClassOf(observation);
       if (beforeClass && afterClass && beforeClass !== afterClass) {
-        confidentChanges += 1;
-        if (confidentChanges >= 2) return true;
+        // A genuine chess move changes square occupancy (empty <-> occupied)
+        // or piece colour (capture). Fluctuations between pieces of the same
+        // colour (e.g. knight vs bishop) are classifier ambiguity, not a move,
+        // and must be smoothly fused instead of resetting the fusion window.
+        const isOccupancyChange = (beforeClass === 'empty') !== (afterClass === 'empty');
+        const beforeColor = beforeClass.startsWith('white_') ? 'w' : beforeClass.startsWith('black_') ? 'b' : null;
+        const afterColor = afterClass.startsWith('white_') ? 'w' : afterClass.startsWith('black_') ? 'b' : null;
+        const isColourChange = beforeColor !== null && afterColor !== null && beforeColor !== afterColor;
+
+        if (isOccupancyChange || isColourChange) {
+          confidentChanges += 1;
+          if (confidentChanges >= 2) return true;
+        }
       }
     }
     return false;

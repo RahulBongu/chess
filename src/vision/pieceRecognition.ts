@@ -516,6 +516,31 @@ function failedStartingVerification(reason: string): StartingPositionVerificatio
   };
 }
 
+function isStartingSquareUncertain(observation: SquareObservation): boolean {
+  if (observation.uncertain !== true) return false;
+  const { rank } = squareFileRank(observation.square);
+  const occ = observation.occupiedProbability ?? (observation.occupied ? 1 : 0);
+  const whiteP = observation.whiteProbability ?? (observation.color === 'w' ? 1 : 0);
+  const blackP = observation.blackProbability ?? (observation.color === 'b' ? 1 : 0);
+
+  // Central squares (ranks 3-6) must be confidently empty.
+  if (rank >= 3 && rank <= 6) {
+    return occ > 0.30;
+  }
+
+  // White home ranks (1-2) must be confidently occupied by White.
+  if (rank === 1 || rank === 2) {
+    return occ < 0.70 || whiteP < 0.70;
+  }
+
+  // Black home ranks (7-8) must be confidently occupied by Black.
+  if (rank === 7 || rank === 8) {
+    return occ < 0.70 || blackP < 0.70;
+  }
+
+  return true;
+}
+
 /**
  * Conclusively verifies whether the observed board matches the untouched 32-piece
  * chess starting position without relying on brittle minor-piece type classification.
@@ -565,7 +590,7 @@ export function verifyStartingPosition(
   }
 
   const uncertainSquares = observations
-    .filter((observation) => observation.uncertain === true)
+    .filter((observation) => isStartingSquareUncertain(observation))
     .map((observation) => observation.square);
   if (uncertainSquares.length > maxUncertainSquares) {
     return {
