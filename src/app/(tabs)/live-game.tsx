@@ -41,7 +41,6 @@ import {
   observationsFromSquareProbabilities,
   rotateSquareProbabilities,
   softmaxSquareScores,
-  summarizeSquareEvidence,
 } from '@/vision/pieceRecognition';
 import { reorderCorners } from '@/vision/boardDetection';
 
@@ -431,8 +430,15 @@ export default function LiveGameScreen() {
               return;
             }
             observations = observationsFromSquareProbabilities(rotated, orientation);
-            const summary = summarizeSquareEvidence(observations);
-            handOccluded = summary.uncertainSquares.length >= 6;
+            // NOTE: Low classifier confidence / many uncertain squares is
+            // recognition uncertainty on a visible board, not physical occlusion.
+            // Physical occlusion must come from explicit signals: tracking
+            // state, alignment confidence, sharpness/motion-blur gates, or a
+            // caller-provided hand flag. We therefore never mark a frame as
+            // hand-occluded solely from the uncertain-square count; fusion
+            // safely accumulates per-square probabilities and marks ambiguous
+            // squares uncertain, while start/move gates refuse to invent pieces.
+            handOccluded = false;
           } else {
             diagnostics.counters.classificationFailures += 1;
           }

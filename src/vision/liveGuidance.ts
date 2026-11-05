@@ -483,11 +483,25 @@ export class LiveGuidanceCoordinator {
             ? 'hold'
             : 'none';
 
-    // 2. Fuse classifier evidence BEFORE the move recognizer sees it. The
-    // corner tracker has already told us whether this frame's square crops are
-    // trustworthy; fusion additionally rejects blur, misalignment, occlusion
-    // and stale frames. When the board is lost or a hand covers it, old
-    // evidence must not survive into the next board pose.
+    // 2. Fuse classifier evidence BEFORE the move recognizer sees it. Distinct
+    // failure modes map to distinct states:
+    //   - Geometry unreliable (trackingState != 'tracking' / alignment low):
+    //     recognizerTrusted is false, fusion not fed, recognizer paused,
+    //     positionState = REACQUIRING_BOARD. Evidence cannot advance.
+    //   - Blurred / physically occluded (sharpness < FUSION_MIN_SHARPNESS,
+    //     motionBlur, or explicit isHandOccluded=true from the caller):
+    //     fusion.addFrame rejects the frame, lastFusionFrameAccepted=false,
+    //     positionState = STABILIZING (blur) or REACQUIRING_BOARD (loss).
+    //     Explicit hand occlusion also resets the window so corrupted squares
+    //     cannot vote into adoption history.
+    //   - Visible board with uncertain classifications (low margins, >6
+    //     uncertain squares): still fed to fusion; fusion marks squares
+    //     uncertain per-square but does not reset. Start/move gates must
+    //     still refuse to confirm/commit without sufficient confident evidence.
+    //   - Sufficient fused + verified evidence: positionState becomes
+    //     POSITION_CONFIRMED and only then engine/best-move/arrows are enabled.
+    // When the board is lost or a hand covers it, old evidence must not survive
+    // into the next board pose.
     const recognizerTrusted = trackingState === 'tracking';
     const hasClassEvidence =
       Boolean(observations) &&

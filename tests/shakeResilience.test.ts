@@ -935,3 +935,134 @@ test('confirmed start advances to the observed move and never silently resets', 
   assert.notEqual(model.fen, STARTING_FEN);
   assert.equal(model.recognizerStatus, 'move_detected');
 });
+
+// ---------------------------------------------------------------------------
+// 5.4I.3: Separate frame quality, occlusion and recognition uncertainty.
+// ---------------------------------------------------------------------------
+
+test('many uncertain squares do not label a visible aligned frame as hand occlusion', async () => {
+  // Regression for the live-camera failure where >6 uncertain squares
+  // triggered handOccluded in live-game.tsx, which reset fusion and blocked
+  // evidence accumulation. Low classifier confidence on a visible board must
+  // not be treated as physical occlusion; geometry/sharpness/alignment drive
+  // the occlusion path instead.
+  const coordinator = standardCoordinator();
+  const grid = probabilityGridForFen(STARTING_FEN);
+  // 10 home squares ambiguous between piece and empty (0.45/0.45 split).
+  for (const square of ['a1', 'b1', 'c1', 'd1', 'e1', 'f1', 'g1', 'h1', 'a2', 'b2'] as ChessSquare[]) {
+    const piece = new ChessGame(STARTING_FEN).pieceAt(square);
+    const trueClass = `${piece!.color === 'w' ? 'white' : 'black'}_${PIECE_NAME[piece!.type]}` as PieceClass;
+    splitSquareClass(grid, square, trueClass, 'empty');
+  }
+  const observations = observationsFromSquareProbabilities(grid, 'white_bottom');
+
+  // isHandOccluded=false mirrors the fixed live-game path: the caller no
+  // longer derives occlusion from uncertain count.
+  const model = await feed(coordinator, observations, 5, 0);
+  assert.ok(model.fusion.acceptedFrames >= 3, 'eligible uncertain frames must accumulate fusion evidence');
+  assert.equal(model.fusion.rejectedFrames, 0);
+  assert.ok(model.fusion.uncertainSquares.length > 6, 'test fixture must present >6 uncertain squares');
+  assert.notEqual(model.recognition.reason ?? '', 'Hand over board. Clear the view to recognize pieces.');
+  assert.notEqual(model.positionState, 'REACQUIRING_BOARD');
+  assert.equal(model.positionConfirmed, false, 'uncertainty alone cannot confirm the start');
+});
+
+test('eligible uncertain frames accumulate evidence across the 2500 ms window', async () => {
+  const fusion = new TemporalSquareFusion();
+  const grid = probabilityGridForFen(STARTING_FEN);
+  // Single uncertain square should not block frame acceptance under good quality.
+  splitSquareClass(grid, 'e2', 'white_pawn', 'empty');
+  const observations = observationsFromSquareProbabilities(grid, 'white_bottom');
+
+  for (let frame = 0; frame < 5; frame += 1) {
+    const result = fusion.addFrame(observations, { sharpness: 0.3, alignmentConfidence: 0.9 }, frame * 500);
+    assert.equal(result.accepted, true, `frame ${frame} must be accepted despite one uncertain square`);
+    assert.equal(result.reason, null);
+  }
+  const snapshot = fusion.snapshot(2000);
+  assert.equal(snapshot.acceptedFrames, 5);
+  assert.equal(snapshot.hasFullCoverage, true);
+  // The 500 ms half-life decay means later frames dominate, but earlier
+  // frames still contributed; total weight must be > single-frame weight.
+  assert.ok(snapshot.averageFrameWeight > 0);
+  assert.ok(snapshot.uncertainSquares.includes('e2'));
+});
+
+test('genuine occlusion and unreliable geometry do not feed unsuitable observations', async () => {
+  const fusion = new TemporalSquareFusion();
+  const observations = observationsFromFen(STARTING_FEN);
+  assert.equal(fusion.addFrame(observations, { sharpness: 0.3, isHandOccluded: true }, 0).accepted, false);
+  assert.equal(fusion.addFrame(observations, { motionBlur: true, sharpness: 0.3 }, 0).accepted, false);
+  assert.equal(fusion.addFrame(observations, { sharpness: 0.001 }, 0).accepted, false);
+  assert.equal(fusion.addFrame(observations, { sharpness: 0.3, alignmentConfidence: 0.05 }, 0).accepted, false);
+  const snapshot = fusion.snapshot(0);
+  assert.equal(snapshot.acceptedFrames, 0);
+  assert.equal(snapshot.hasFullCoverage, false);
+  assert.equal(snapshot.observations.length, 0);
+});
+
+test('uncertainty alone cannot confirm a starting position', async () => {
+  const coordinator = standardCoordinator();
+  const grid = probabilityGridForFen(STARTING_FEN);
+  // 4 ambiguous home squares + 4 ambiguous centre squares = well over prior budget.
+  for (const square of ['a1', 'e2', 'e8', 'h8', 'e4', 'd4', 'e5', 'd5'] as ChessSquare[]) {
+    const piece = new ChessGame(STARTING_FEN).pieceAt(square);
+    const trueClass = piece
+      ? (`${piece.color === 'w' ? 'white' : 'black'}_${PIECE_NAME[piece.type]}` as PieceClass)
+      : 'empty';
+    splitSquareClass(grid, square, trueClass, trueClass === 'empty' ? 'white_pawn' : 'empty');
+  }
+  const observations = observationsFromSquareProbabilities(grid, 'white_bottom');
+  const model = await feed(coordinator, observations, 5, 0);
+  assert.equal(model.positionConfirmed, false);
+  assert.equal(model.startReady, false);
+  assert.equal(coordinator.confirmStartingPosition(), false);
+  assert.equal(model.bestMove, null);
+  assert.equal(model.perspectiveGeometry.arrow, null);
+  assert.ok(model.fusion.acceptedFrames > 0, 'frames must still be fusible even though they cannot prove the start');
+});
+
+test('a move with many uncertain squares does not commit without reliable arrival', async () => {
+  const coordinator = confirmedCoordinator(STARTING_FEN);
+  await feed(coordinator, observationsFromFen(STARTING_FEN), 1, 0);
+  const grid = probabilityGridForFen(AFTER_E4_FEN);
+  // Spread 8 ambiguous squares across the board so the board is clearly uncertain.
+  for (const square of ['e2', 'e4', 'a8', 'h8', 'a7', 'h7', 'd4', 'd5'] as ChessSquare[]) {
+    const piece = new ChessGame(AFTER_E4_FEN).pieceAt(square);
+    const trueClass = piece
+      ? (`${piece.color === 'w' ? 'white' : 'black'}_${PIECE_NAME[piece.type]}` as PieceClass)
+      : 'empty';
+    splitSquareClass(grid, square, trueClass, 'empty');
+  }
+  const observations = observationsFromSquareProbabilities(grid, 'white_bottom');
+  const model = await feed(coordinator, observations, 4, 250);
+  assert.equal(model.fen, STARTING_FEN, 'confirmed FEN must be preserved');
+  assert.equal(model.provisionalMove, null);
+  assert.notEqual(model.recognizerStatus, 'move_detected');
+  assert.equal(model.bestMove, null);
+});
+
+test('temporal fusion does not combine stale evidence across confirmed move, orientation change or tracking loss', async () => {
+  // Orientation change resets the window.
+  const coordinator = confirmedCoordinator(STARTING_FEN);
+  await feed(coordinator, observationsFromFen(STARTING_FEN), 2, 0);
+  assert.ok(coordinator.processFrame !== undefined);
+  // Feed 2 more evidence frames, then flip orientation (White Bottom -> Black Bottom).
+  await feed(coordinator, observationsFromFen(STARTING_FEN), 1, 750);
+  coordinator.setOrientation('black_bottom');
+  let model = await coordinator.processFrame(NORMALIZED_CORNERS, observationsFromFen(STARTING_FEN), false, 0.9, 1000, null, { ...QUALITY, capturedAtMs: 1000 });
+  // After the orientation reset, the single post-reset frame must not present
+  // pre-reset evidence; fusion should be at most 1 accepted frame.
+  assert.ok(model.fusion.acceptedFrames <= 1, `expected stale frames discarded, got ${model.fusion.acceptedFrames}`);
+
+  // Confirmed-move reset is already validated by fused-epoch tests, but also
+  // verify a small camera discontinuity (tracker outlier) holds without
+  // contributing a proposed square set.
+  const coordinator2 = confirmedCoordinator(STARTING_FEN);
+  await feed(coordinator2, observationsFromFen(STARTING_FEN), 1, 0);
+  const jumped = NORMALIZED_CORNERS.map((c) => ({ x: c.x + 0.2, y: c.y + 0.1 }));
+  model = await coordinator2.processFrame(jumped, observationsFromFen(AFTER_E4_FEN), false, 0.9, 250, null, { ...QUALITY, capturedAtMs: 250 });
+  // First discontinuous frame must hold, not commit a move.
+  assert.equal(model.fen, STARTING_FEN);
+  assert.notEqual(model.recognizerStatus, 'move_detected');
+});
