@@ -490,10 +490,14 @@ test('fusion starts a new epoch when a move changes the board', () => {
   fusion.addFrame(observationsFromFen(STARTING_FEN), { sharpness: 0.3 }, 0);
   fusion.addFrame(observationsFromFen(STARTING_FEN), { sharpness: 0.3 }, 250);
   fusion.addFrame(observationsFromFen(AFTER_E4_FEN), { sharpness: 0.3 }, 500);
+  // A move must be corroborated by a second post-move frame before the old
+  // epoch is discarded.
+  fusion.addFrame(observationsFromFen(AFTER_E4_FEN), { sharpness: 0.3 }, 750);
 
-  const snapshot = fusion.snapshot(500);
+  const snapshot = fusion.snapshot(750);
   assert.equal(snapshot.transitionResets, 1);
-  assert.equal(snapshot.acceptedFrames, 1);
+  assert.equal(snapshot.transitionResetsByKind.occupancy, 1);
+  assert.equal(snapshot.acceptedFrames, 2);
   assert.equal(snapshot.squares.find((square) => square.square === 'e2')?.topClass, 'empty');
   assert.equal(
     snapshot.squares.find((square) => square.square === 'e4')?.topClass,
@@ -539,10 +543,12 @@ test('epoch comparison uses the oldest frame so one-square-per-frame drift canno
   }, 250);
 
   fusion.addFrame(observationsFromFen(AFTER_E4_FEN), { sharpness: 0.3 }, 500);
-  const snapshot = fusion.snapshot(500);
+  fusion.addFrame(observationsFromFen(AFTER_E4_FEN), { sharpness: 0.3 }, 750);
+  const snapshot = fusion.snapshot(750);
   assert.equal(snapshot.transitionResets, 1);
-  assert.equal(snapshot.acceptedFrames, 1);
+  assert.equal(snapshot.acceptedFrames, 2);
   assert.equal(snapshot.squares.find((square) => square.square === 'e4')?.topClass, 'white_pawn');
+  assert.equal(snapshot.squares.find((square) => square.square === 'e2')?.topClass, 'empty');
 });
 
 // ---------------------------------------------------------------------------
@@ -569,7 +575,7 @@ test('confirmed position survives blurred shake frames without moving and recove
   assert.equal(model.perspectiveGeometry.arrow, null);
   assert.equal(model.fusion.frameAccepted, false);
 
-  model = await feed(coordinator, afterE4, 3, 500);
+  model = await feed(coordinator, afterE4, 4, 500);
   assert.equal(model.fen, AFTER_E4_FEN);
   assert.equal(model.recognizerStatus, 'move_detected');
   assert.equal(model.positionState, 'POSITION_CONFIRMED');
@@ -851,7 +857,7 @@ test('every legal opening move is recognized through the fusion pipeline', async
 
     const coordinator = confirmedCoordinator(beforeFen);
     await feed(coordinator, observationsFromFen(beforeFen), 1, 0);
-    const model = await feed(coordinator, observationsFromFen(child.fen()), 3, 250);
+    const model = await feed(coordinator, observationsFromFen(child.fen()), 4, 250);
 
     assert.equal(model.fen, child.fen(), `FEN mismatch for ${move.san}`);
     assert.equal(model.recognizerStatus, 'move_detected', `not detected: ${move.san}`);
@@ -861,7 +867,7 @@ test('every legal opening move is recognized through the fusion pipeline', async
 test('black replies in the other direction are recognized', async () => {
   const coordinator = confirmedCoordinator(AFTER_E4_FEN);
   await feed(coordinator, observationsFromFen(AFTER_E4_FEN), 1, 0);
-  const model = await feed(coordinator, observationsFromFen(AFTER_E5_FEN), 3, 250);
+  const model = await feed(coordinator, observationsFromFen(AFTER_E5_FEN), 4, 250);
   assert.equal(model.fen, AFTER_E5_FEN);
   assert.equal(model.turn, 'w');
 });
@@ -870,7 +876,7 @@ test('captures are recognized from piece evidence, not brightness', async () => 
   const after = applyMove(CAPTURE_BEFORE_FEN, 'e4', 'd5');
   const coordinator = confirmedCoordinator(CAPTURE_BEFORE_FEN);
   await feed(coordinator, observationsFromFen(CAPTURE_BEFORE_FEN), 1, 0);
-  const model = await feed(coordinator, observationsFromFen(after), 3, 250);
+  const model = await feed(coordinator, observationsFromFen(after), 4, 250);
   assert.equal(model.fen, after);
   assert.equal(model.recognizerStatus, 'move_detected');
 });
@@ -879,7 +885,7 @@ test('castling is recognized as a king and rook transition', async () => {
   const after = applyMove(CASTLE_BEFORE_FEN, 'e1', 'g1');
   const coordinator = confirmedCoordinator(CASTLE_BEFORE_FEN);
   await feed(coordinator, observationsFromFen(CASTLE_BEFORE_FEN), 1, 0);
-  const model = await feed(coordinator, observationsFromFen(after), 3, 250);
+  const model = await feed(coordinator, observationsFromFen(after), 4, 250);
   assert.equal(model.fen, after);
   assert.equal(model.recognizerStatus, 'move_detected');
 });
@@ -892,7 +898,7 @@ test('en passant is recognized when the adopted FEN has no ep field', async () =
 
   const coordinator = confirmedCoordinator(normalizedBefore);
   await feed(coordinator, observationsFromFen(normalizedBefore), 1, 0);
-  const model = await feed(coordinator, observationsFromFen(after), 3, 250);
+  const model = await feed(coordinator, observationsFromFen(after), 4, 250);
   // Side to move, castling and en-passant fields are reconstructed; move
   // counters legitimately follow the adopted FEN's base.
   const placement = (fen: string) => fen.split(' ').slice(0, 4).join(' ');
@@ -905,7 +911,7 @@ test('white promotion requires explicit piece confirmation', async () => {
   const coordinator = confirmedCoordinator(WHITE_PROMOTION_FEN);
   await feed(coordinator, observationsFromFen(WHITE_PROMOTION_FEN), 1, 0);
 
-  let model = await feed(coordinator, observationsFromFen(afterQueen), 3, 250);
+  let model = await feed(coordinator, observationsFromFen(afterQueen), 4, 250);
   assert.equal(model.fen, WHITE_PROMOTION_FEN, 'promotion must not auto-apply');
   assert.equal(model.pendingPromotion?.to, 'a8');
   assert.equal(coordinator.getRecognizer().confirmPromotion('q'), true);
@@ -917,7 +923,7 @@ test('black promotion requires explicit piece confirmation', async () => {
   const coordinator = confirmedCoordinator(BLACK_PROMOTION_FEN);
   await feed(coordinator, observationsFromFen(BLACK_PROMOTION_FEN), 1, 0);
 
-  const model = await feed(coordinator, observationsFromFen(afterQueen), 3, 250);
+  const model = await feed(coordinator, observationsFromFen(afterQueen), 4, 250);
   assert.equal(model.fen, BLACK_PROMOTION_FEN);
   assert.equal(model.pendingPromotion?.to, 'h1');
   assert.equal(coordinator.getRecognizer().confirmPromotion('q'), true);
@@ -972,7 +978,7 @@ test('confirmed start advances to the observed move and never silently resets', 
   assert.equal(coordinator.confirmStartingPosition(), true);
   await feed(coordinator, start, 1, 1000);
 
-  const model = await feed(coordinator, observationsFromFen(AFTER_E4_FEN), 3, 1250);
+  const model = await feed(coordinator, observationsFromFen(AFTER_E4_FEN), 4, 1250);
   assert.equal(model.fen, AFTER_E4_FEN);
   assert.notEqual(model.fen, STARTING_FEN);
   assert.equal(model.recognizerStatus, 'move_detected');
@@ -1149,4 +1155,314 @@ test('temporal fusion does not combine stale evidence across confirmed move, ori
   // First discontinuous frame must hold, not commit a move.
   assert.equal(model.fen, STARTING_FEN);
   assert.notEqual(model.recognizerStatus, 'move_detected');
+});
+
+// ---------------------------------------------------------------------------
+// 5.4I.4: fusion epoch stability and reset-cause telemetry.
+// ---------------------------------------------------------------------------
+
+/** Builds standard-start observations with confident per-square overrides. */
+function observationsWithOverrides(
+  fen: string,
+  overrides: Array<[ChessSquare, PieceClass]>,
+  topProbability = 0.95,
+): SquareObservation[] {
+  const grid = probabilityGridForFen(fen);
+  for (const [square, pieceClass] of overrides) {
+    setSquareClass(grid, square, pieceClass, topProbability);
+  }
+  return observationsFromSquareProbabilities(grid, 'white_bottom');
+}
+
+const WHITE_PAWN_SQUARES: ChessSquare[] = [
+  'a2', 'b2', 'c2', 'd2', 'e2', 'f2', 'g2', 'h2',
+];
+const EMPTY_SQUARES: ChessSquare[] = [
+  'a3', 'b3', 'c3', 'd3', 'e3', 'f3', 'g3', 'h3',
+  'a4', 'b4', 'c4', 'd4', 'e4', 'f4', 'g4', 'h4',
+];
+
+test('26 isolated high-confidence flips do not repeatedly erase usable evidence', () => {
+  // Deterministic reproduction of the live failure: every accepted frame made
+  // two confident square claims (occupancy, colour, or mixed) that disagreed
+  // with the retained board. The old code compared against the oldest frame
+  // and wiped the whole window on every one of those frames.
+  const fusion = new TemporalSquareFusion();
+  for (let frame = 0; frame < 4; frame += 1) {
+    fusion.addFrame(observationsFromFen(STARTING_FEN), QUALITY, frame * 80);
+  }
+  assert.equal(fusion.snapshot(240).acceptedFrames, 4);
+
+  const flips: Array<[ChessSquare, PieceClass, ChessSquare, PieceClass]> = [];
+  for (let index = 0; index < 10; index += 1) {
+    flips.push([
+      index < 8 ? WHITE_PAWN_SQUARES[index] : index === 8 ? 'b1' : 'g1',
+      'empty',
+      EMPTY_SQUARES[index],
+      'white_pawn',
+    ]);
+  }
+  for (let index = 0; index < 8; index += 1) {
+    flips.push([
+      WHITE_PAWN_SQUARES[index],
+      'black_pawn',
+      WHITE_PAWN_SQUARES[(index + 1) % 8],
+      'black_pawn',
+    ]);
+  }
+  for (let index = 0; index < 8; index += 1) {
+    flips.push([
+      WHITE_PAWN_SQUARES[index],
+      'empty',
+      EMPTY_SQUARES[index],
+      'black_knight',
+    ]);
+  }
+
+  let lastAcceptedFrames = 4;
+  for (let frame = 0; frame < flips.length; frame += 1) {
+    const [firstSquare, firstClass, secondSquare, secondClass] = flips[frame];
+    const observations = observationsWithOverrides(STARTING_FEN, [
+      [firstSquare, firstClass],
+      [secondSquare, secondClass],
+    ]);
+    const at = 320 + frame * 70;
+    const result = fusion.addFrame(observations, QUALITY, at);
+    assert.equal(result.accepted, true, `noisy frame ${frame} should still be accepted`);
+    assert.equal(result.transitionReset, undefined);
+
+    const snapshot = fusion.snapshot(at);
+    lastAcceptedFrames = snapshot.acceptedFrames;
+    assert.equal(snapshot.transitionResets, 0, `isolated flips must not reset the epoch (frame ${frame})`);
+    assert.equal(snapshot.transitionResetsByKind.occupancy, 0);
+    assert.equal(snapshot.transitionResetsByKind.colour, 0);
+    assert.equal(snapshot.transitionResetsByKind.mixed, 0);
+    assert.ok(snapshot.pendingTransition);
+    assert.equal(snapshot.pendingTransition?.frames, 1);
+    // The retained clean frames stay authoritative and within the window.
+    assert.equal(snapshot.squares.find((square) => square.square === 'e2')?.topClass, 'white_pawn');
+    assert.equal(snapshot.squares.find((square) => square.square === 'e4')?.topClass, 'empty');
+  }
+
+  const snapshot = fusion.snapshot(320 + (flips.length - 1) * 70);
+  assert.ok(lastAcceptedFrames >= 4, 'clean evidence must survive the noisy burst');
+  assert.equal(snapshot.discardedTransitions, flips.length - 1);
+  assert.equal(snapshot.lastDiscardedTransition?.reason, 'signature_changed');
+
+  // A following clean frame proves the candidate was noise and is fused.
+  const recovered = fusion.addFrame(observationsFromFen(STARTING_FEN), QUALITY, 2140);
+  assert.equal(recovered.accepted, true);
+  const recoveredSnapshot = fusion.snapshot(2140);
+  assert.equal(recoveredSnapshot.pendingTransition, null);
+  assert.equal(recoveredSnapshot.discardedTransitions, flips.length);
+  assert.equal(recoveredSnapshot.lastDiscardedTransition?.reason, 'not_corroborated');
+  assert.equal(recoveredSnapshot.acceptedFrames, lastAcceptedFrames + 1);
+});
+
+test('isolated low-confidence occupancy and colour flips are telemetry, not transitions', () => {
+  const fusion = new TemporalSquareFusion();
+  for (let frame = 0; frame < 26; frame += 1) {
+    const grid = probabilityGridForFen(STARTING_FEN);
+    if (frame % 2 === 0) {
+      // Ambiguous occupancy: the classifier cannot decide pawn vs empty.
+      splitSquareClass(grid, WHITE_PAWN_SQUARES[frame % 8], 'white_pawn', 'empty');
+      splitSquareClass(
+        grid,
+        WHITE_PAWN_SQUARES[(frame + 3) % 8],
+        'white_pawn',
+        'empty',
+      );
+    } else {
+      // Ambiguous colour: white pawn vs black pawn at ~45% each.
+      splitSquareClass(
+        grid,
+        WHITE_PAWN_SQUARES[frame % 8],
+        'white_pawn',
+        'black_pawn',
+      );
+      splitSquareClass(
+        grid,
+        WHITE_PAWN_SQUARES[(frame + 5) % 8],
+        'white_pawn',
+        'black_pawn',
+      );
+    }
+    const observations = observationsFromSquareProbabilities(grid, 'white_bottom');
+    const at = frame * 100;
+    const result = fusion.addFrame(observations, QUALITY, at);
+    assert.equal(result.accepted, true);
+    assert.equal(result.transitionReset, undefined);
+  }
+
+  const snapshot = fusion.snapshot(2500);
+  assert.equal(snapshot.transitionResets, 0, 'low-confidence flicker must never reset the epoch');
+  assert.equal(snapshot.pendingTransition, null, 'low-confidence flicker must not even propose a transition');
+  assert.equal(snapshot.discardedTransitions, 0);
+  assert.ok(
+    snapshot.lowConfidenceFluctuations > 0 &&
+      snapshot.lowConfidenceFluctuations <= 26,
+    `flicker telemetry must be bounded and populated, got ${snapshot.lowConfidenceFluctuations}`,
+  );
+  assert.ok(snapshot.lastLowConfidenceSquares.length > 0);
+  assert.ok(snapshot.acceptedFrames > 0, 'usable evidence must still accumulate');
+  assert.equal(snapshot.hasFullCoverage, true);
+});
+
+test('a persistent reliable move is corroborated, then replaces the old epoch', () => {
+  const fusion = new TemporalSquareFusion();
+  for (let frame = 0; frame < 4; frame += 1) {
+    fusion.addFrame(observationsFromFen(STARTING_FEN), QUALITY, frame * 250);
+  }
+  const afterE4 = observationsFromFen(AFTER_E4_FEN);
+
+  // First post-move frame: candidate held, old epoch still authoritative.
+  const first = fusion.addFrame(afterE4, QUALITY, 1000);
+  assert.equal(first.accepted, true);
+  assert.equal(first.transitionReset, undefined);
+  let snapshot = fusion.snapshot(1000);
+  assert.equal(snapshot.transitionResets, 0);
+  assert.equal(snapshot.pendingTransition?.frames, 1);
+  assert.equal(snapshot.acceptedFrames, 4);
+  assert.equal(snapshot.squares.find((square) => square.square === 'e2')?.topClass, 'white_pawn');
+  assert.equal(snapshot.squares.find((square) => square.square === 'e4')?.topClass, 'empty');
+
+  // Second identical post-move frame corroborates the transition.
+  const second = fusion.addFrame(afterE4, QUALITY, 1250);
+  assert.equal(second.accepted, true);
+  assert.equal(second.transitionReset, true);
+  assert.equal(second.transitionKind, 'occupancy');
+  assert.deepEqual(second.transitionSquares, ['e2', 'e4']);
+
+  snapshot = fusion.snapshot(1250);
+  assert.equal(snapshot.transitionResets, 1);
+  assert.equal(snapshot.transitionResetsByKind.occupancy, 1);
+  assert.equal(snapshot.acceptedFrames, 2, 'only corroborating post-move frames remain');
+  assert.equal(snapshot.pendingTransition, null);
+  assert.equal(snapshot.lastEpochReset?.kind, 'occupancy');
+  assert.equal(snapshot.lastEpochReset?.corroboratingFrames, 2);
+  assert.deepEqual(snapshot.lastEpochReset?.squares, ['e2', 'e4']);
+  assert.deepEqual(snapshot.lastEpochReset?.changes, [
+    'e2:white_pawn->empty',
+    'e4:empty->white_pawn',
+  ]);
+  // Old-position evidence must not survive the confirmed transition.
+  assert.equal(snapshot.squares.find((square) => square.square === 'e2')?.topClass, 'empty');
+  assert.equal(snapshot.squares.find((square) => square.square === 'e4')?.topClass, 'white_pawn');
+});
+
+test('occlusion and tracking loss invalidate evidence and count once per episode', async () => {
+  const coordinator = confirmedCoordinator(STARTING_FEN);
+  const start = observationsFromFen(STARTING_FEN);
+  await feed(coordinator, start, 2, 0);
+
+  let model = await coordinator.processFrame(
+    NORMALIZED_CORNERS,
+    start,
+    true,
+    0.9,
+    500,
+    null,
+    { ...QUALITY, capturedAtMs: 500 },
+  );
+  assert.equal(model.fusion.acceptedFrames, 0, 'occluded observations must not remain fused');
+  assert.equal(model.fusion.frameAccepted, false);
+  assert.equal(model.fusion.resetCounts.occlusion, 1);
+  assert.equal(model.fusion.lastReset?.cause, 'occlusion');
+
+  model = await coordinator.processFrame(
+    NORMALIZED_CORNERS,
+    start,
+    true,
+    0.9,
+    750,
+    null,
+    { ...QUALITY, capturedAtMs: 750 },
+  );
+  assert.equal(model.fusion.resetCounts.occlusion, 1, 'one continuous occlusion is one reset');
+  assert.equal(model.fen, STARTING_FEN);
+
+  model = await feed(coordinator, start, 1, 1000);
+  assert.equal(model.fusion.frameAccepted, true, 'visible frames must refill fusion');
+  assert.ok(model.fusion.acceptedFrames >= 1);
+
+  // A single missing board frame is a transient hold. Tracking loss is only
+  // declared after persistence, and then must invalidate fused evidence.
+  model = await coordinator.processFrame(null, null, false, 0, 1250);
+  for (let at = 1500; at <= 5000 && model.trackingState !== 'lost'; at += 250) {
+    model = await coordinator.processFrame(null, null, false, 0, at);
+  }
+  assert.equal(model.trackingState, 'lost');
+  assert.equal(model.fusion.acceptedFrames, 0);
+  assert.equal(model.fusion.resetCounts.tracking_lost, 1);
+  assert.equal(model.fusion.lastReset?.cause, 'tracking_lost');
+
+  model = await coordinator.processFrame(null, null, false, 0, 5250);
+  assert.equal(model.fusion.resetCounts.tracking_lost, 1, 'one continuous loss is one reset');
+  assert.equal(model.fusion.acceptedFrames, 0);
+
+  model = await feed(coordinator, start, 1, 5500);
+  assert.equal(model.fusion.frameAccepted, true);
+  model = await coordinator.processFrame(null, null, false, 0, 5750);
+  for (let at = 6000; at <= 10000 && model.trackingState !== 'lost'; at += 250) {
+    model = await coordinator.processFrame(null, null, false, 0, at);
+  }
+  assert.equal(model.trackingState, 'lost');
+  assert.equal(model.fusion.resetCounts.tracking_lost, 2, 'a new loss episode counts again');
+});
+
+test('stale pre-move evidence cannot override a newer confirmed move', async () => {
+  const coordinator = confirmedCoordinator(STARTING_FEN);
+  const start = observationsFromFen(STARTING_FEN);
+  await feed(coordinator, start, 2, 0);
+
+  let model = await feed(coordinator, observationsFromFen(AFTER_E4_FEN), 4, 500);
+  assert.equal(model.fen, AFTER_E4_FEN);
+  assert.equal(model.recognizerStatus, 'move_detected');
+  assert.equal(model.fusion.resetCounts.confirmed_move, 1);
+  assert.ok(model.fusion.resetCounts.epoch_transition >= 1);
+  assert.equal(model.fusion.transitionResets, 0, 'move commit reseeds a clean fusion epoch');
+
+  // Old-position frames flood in. Fusion may see the camera become persistent
+  // about the old layout, but the legal-move gate must never revert the FEN.
+  model = await feed(coordinator, start, 4, 1500);
+  assert.equal(model.fen, AFTER_E4_FEN);
+  assert.notEqual(model.recognizerStatus, 'move_detected');
+});
+
+test('a persistent but unsupported board change never changes the confirmed FEN', async () => {
+  const coordinator = confirmedCoordinator(STARTING_FEN);
+  await feed(coordinator, observationsFromFen(STARTING_FEN), 1, 0);
+
+  // Two reliable squares change, but no legal white move produces a pawn on
+  // e5 while e2 is empty in one ply.
+  const illegal = observationsWithOverrides(STARTING_FEN, [
+    ['e2', 'empty'],
+    ['e5', 'white_pawn'],
+  ]);
+  const model = await feed(coordinator, illegal, 4, 250);
+  assert.equal(model.fen, STARTING_FEN);
+  assert.equal(model.provisionalMove, null);
+  assert.notEqual(model.recognizerStatus, 'move_detected');
+});
+
+test('one, two and three uncertain squares remain safely handled', async () => {
+  const cases: ChessSquare[][] = [['e2'], ['e2', 'd2'], ['e2', 'd2', 'a1']];
+  for (const squares of cases) {
+    const grid = probabilityGridForFen(STARTING_FEN);
+    for (const square of squares) {
+      const piece = new ChessGame(STARTING_FEN).pieceAt(square);
+      assert.ok(piece);
+      const trueClass = `${piece.color === 'w' ? 'white' : 'black'}_${PIECE_NAME[piece.type]}` as PieceClass;
+      splitSquareClass(grid, square, trueClass, 'empty');
+    }
+    const observations = observationsFromSquareProbabilities(grid, 'white_bottom');
+    const coordinator = standardCoordinator();
+    const model = await feed(coordinator, observations, 4, 0);
+    const label = `${squares.length} uncertain square(s)`;
+    assert.ok(model.fusion.acceptedFrames >= 3, `${label}: frames must fuse`);
+    assert.equal(model.fusion.rejectedFrames, 0, `${label}: frames must not be rejected`);
+    assert.equal(model.startReady, true, `${label}: expected layout may resolve the ambiguity`);
+    assert.equal(coordinator.confirmStartingPosition(), true, `${label}: explicit confirmation must succeed`);
+    assert.equal(model.fusion.uncertainSquares.length, squares.length, `${label}: ambiguity preserved`);
+  }
 });

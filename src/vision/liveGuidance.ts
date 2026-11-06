@@ -40,6 +40,10 @@ import {
 import {
   TemporalSquareFusion,
   type FrameQuality,
+  type FusionDiscardedTransition,
+  type FusionEpochResetKind,
+  type FusionFrameResult,
+  type FusionRejectionCounts,
   type FusionSnapshot,
   type TemporalFusionOptions,
 } from './temporalFusion.ts';
@@ -121,6 +125,36 @@ export interface LiveFusionState {
   hasFullCoverage: boolean;
   averageFrameWeight: number;
   transitionResets: number;
+  /** Per-kind breakdown of corroborated epoch transitions since the last reset. */
+  transitionResetsByKind: Record<FusionEpochResetKind, number>;
+  /** Most recent corroborated epoch transition, including changed squares. */
+  lastEpochReset: {
+    atMs: number;
+    kind: FusionEpochResetKind;
+    squares: ChessSquare[];
+    changes: string[];
+    corroboratingFrames: number;
+  } | null;
+  /** Candidate transition awaiting corroboration; withheld from fusion. */
+  pendingTransition: {
+    kind: FusionEpochResetKind;
+    squares: ChessSquare[];
+    changes: string[];
+    frames: number;
+    ageMs: number;
+  } | null;
+  /** Candidate transitions discarded because they were isolated noise. */
+  discardedTransitions: number;
+  lastDiscardedTransition: FusionDiscardedTransition | null;
+  /** Accepted frames containing low-confidence top-class flicker. */
+  lowConfidenceFluctuations: number;
+  lastLowConfidenceSquares: ChessSquare[];
+  /** Rejections by addFrame reason since the last hard reset. */
+  rejectionCounts: FusionRejectionCounts;
+  /** Lifetime evidence-reset counts by cause (survives per-frame resets). */
+  resetCounts: FusionResetCounts;
+  /** Most recent evidence-reset event and its cause. */
+  lastReset: FusionResetEvent | null;
   /** Measured frame focus (normalized Laplacian variance). */
   sharpness: number | null;
   /** Mean frame luma in 0..255, or null when unavailable. */
@@ -129,6 +163,37 @@ export interface LiveFusionState {
   alignmentConfidence: number | null;
   /** Whether the most recent complete frame was accepted into the window. */
   frameAccepted: boolean;
+}
+
+export type FusionResetCause =
+  | 'epoch_transition'
+  | 'tracking_lost'
+  | 'occlusion'
+  | 'confirmed_move'
+  | 'adoption'
+  | 'orientation_change'
+  | 'mode_change'
+  | 'user_reset';
+
+export type FusionResetCounts = Record<FusionResetCause, number>;
+
+export interface FusionResetEvent {
+  cause: FusionResetCause;
+  atMs: number;
+  detail: string | null;
+}
+
+export function emptyFusionResetCounts(): FusionResetCounts {
+  return {
+    epoch_transition: 0,
+    tracking_lost: 0,
+    occlusion: 0,
+    confirmed_move: 0,
+    adoption: 0,
+    orientation_change: 0,
+    mode_change: 0,
+    user_reset: 0,
+  };
 }
 
 export interface LiveGuidanceModel {
@@ -265,6 +330,10 @@ export class LiveGuidanceCoordinator {
   private startUsedPrior = false;
   private startPriorResolvedSquares: string[] = [];
   private positionState: LivePositionState = 'REACQUIRING_BOARD';
+  private fusionResetCounts: FusionResetCounts = emptyFusionResetCounts();
+  private lastFusionReset: FusionResetEvent | null = null;
+  /** Cause of the current continuous loss/occlusion episode, if any. */
+  private activeResetEpisode: FusionResetCause | null = null;
 
   constructor(options: LiveGuidanceOptions = {}) {
     this.orientation = options.orientation ?? 'white_bottom';
@@ -300,7 +369,7 @@ export class LiveGuidanceCoordinator {
     if (orientation !== this.orientation) {
       // Evidence gathered in the old orientation maps to different algebraic
       // squares. Never average across an orientation change.
-      this.clearAdoptionEvidence();
+      this.clearAdoptionEvidence('orientation_change');
     }
     this.orientation = orientation;
   }
@@ -324,7 +393,7 @@ export class LiveGuidanceCoordinator {
     if (!this.startVerified) return false;
     if (this.recognizer.adoptPosition(STARTING_FEN)) {
       this.positionConfirmed = true;
-      this.clearAdoptionEvidence();
+      this.clearAdoptionEvidence('adoption', Date.now(), 'confirmed start');
       this.recognitionReason = null;
       this.currentAnalysis = null;
       this.analyzedFen = null;
@@ -338,7 +407,7 @@ export class LiveGuidanceCoordinator {
     if (this.initializationMode !== mode) {
       this.initializationMode = mode;
       if (!this.positionConfirmed) {
-        this.clearAdoptionEvidence();
+        this.clearAdoptionEvidence('mode_change', Date.now(), mode);
       }
     }
   }
@@ -365,7 +434,7 @@ export class LiveGuidanceCoordinator {
   setTurn(turn: 'w' | 'b'): boolean {
     this.turnHint = turn;
     if (!this.positionConfirmed) {
-      this.clearAdoptionEvidence();
+      this.clearAdoptionEvidence('user_reset', Date.now(), `turn hint ${turn}`);
       return true;
     }
     const ok = this.recognizer.setTurn(turn);
@@ -414,7 +483,7 @@ export class LiveGuidanceCoordinator {
       return false;
     }
     this.positionConfirmed = true;
-    this.clearAdoptionEvidence();
+    this.clearAdoptionEvidence('adoption', Date.now(), 'user position');
     this.recognitionReason = null;
     this.currentAnalysis = null;
     this.analyzedFen = null;
@@ -520,16 +589,14 @@ export class LiveGuidanceCoordinator {
       );
 
     if (trackingState === 'lost' || trackingState === 'uncalibrated') {
-      this.resetFusionEvidence();
-      this.clearAdoptionEvidence();
+      this.clearAdoptionEvidence('tracking_lost', frameNow, trackingState);
       if (!this.positionConfirmed) {
         this.recognitionReason = 'Locating board...';
       }
     } else if (isHandOccluded) {
       // Occluded squares are systematically darker and sampling is misaligned.
       // Never let them vote, and do not average them into adoption evidence.
-      this.resetFusionEvidence();
-      this.clearAdoptionEvidence();
+      this.clearAdoptionEvidence('occlusion', frameNow, 'hand or covered lens');
       if (!this.positionConfirmed) {
         this.recognitionReason = 'Hand over board. Clear the view to recognize pieces.';
       }
@@ -545,6 +612,7 @@ export class LiveGuidanceCoordinator {
     ) {
       const added = this.fusion.addFrame(observations, frameQuality, frameNow);
       fusionFrameAccepted = added.accepted;
+      this.noteEpochTransition(added, frameNow);
     }
     this.lastFusionFrameAccepted = fusionFrameAccepted;
     const snapshot = this.fusion.snapshot(frameNow);
@@ -645,7 +713,7 @@ export class LiveGuidanceCoordinator {
                   // frames against the believed position.
                   if (this.recognizer.adoptPosition(candidate.fen)) {
                     this.positionConfirmed = true;
-                    this.clearAdoptionEvidence();
+                    this.clearAdoptionEvidence('adoption', frameNow, candidate.fen);
                     // Seed the new epoch with the frame that completed
                     // adoption, so engine/arrow gating has immediate fresh
                     // evidence. Pre-adoption frames are already discarded.
@@ -701,7 +769,11 @@ export class LiveGuidanceCoordinator {
     // old position. Re-seed from the confirmed FEN's frame so the next
     // comparison cannot drift back.
     if (recognitionResult && recognitionResult.move) {
-      this.resetFusionEvidence();
+      this.resetFusionEvidence(
+        'confirmed_move',
+        frameNow,
+        recognitionResult.move.san,
+      );
       if (observations && hasClassEvidence && !isHandOccluded) {
         this.seedFusionEvidence(observations, frameQuality, frameNow);
       }
@@ -928,6 +1000,35 @@ export class LiveGuidanceCoordinator {
         hasFullCoverage: this.fusionSnapshot?.hasFullCoverage ?? false,
         averageFrameWeight: this.fusionSnapshot?.averageFrameWeight ?? 0,
         transitionResets: this.fusionSnapshot?.transitionResets ?? 0,
+        transitionResetsByKind:
+          this.fusionSnapshot?.transitionResetsByKind ?? {
+            occupancy: 0,
+            colour: 0,
+            mixed: 0,
+            discontinuity: 0,
+          },
+        lastEpochReset: this.fusionSnapshot?.lastEpochReset ?? null,
+        pendingTransition: this.fusionSnapshot?.pendingTransition ?? null,
+        discardedTransitions: this.fusionSnapshot?.discardedTransitions ?? 0,
+        lastDiscardedTransition:
+          this.fusionSnapshot?.lastDiscardedTransition ?? null,
+        lowConfidenceFluctuations:
+          this.fusionSnapshot?.lowConfidenceFluctuations ?? 0,
+        lastLowConfidenceSquares:
+          this.fusionSnapshot?.lastLowConfidenceSquares ?? [],
+        rejectionCounts:
+          this.fusionSnapshot?.rejectionCounts ?? {
+            incomplete: 0,
+            occlusion: 0,
+            stale: 0,
+            blur: 0,
+            focus: 0,
+            alignment: 0,
+            visibility: 0,
+            lowWeight: 0,
+          },
+        resetCounts: { ...this.fusionResetCounts },
+        lastReset: this.lastFusionReset,
         sharpness: this.lastFrameSharpness,
         meanLuminance: this.lastFrameMeanLuminance,
         alignmentConfidence: this.lastAlignmentConfidence,
@@ -982,7 +1083,11 @@ export class LiveGuidanceCoordinator {
     };
   }
 
-  private clearAdoptionEvidence(): void {
+  private clearAdoptionEvidence(
+    cause: FusionResetCause = 'user_reset',
+    atMs: number = Date.now(),
+    detail: string | null = null,
+  ): void {
     this.adoptionFrames = [];
     this.adoptionStreak = 0;
     this.adoptionCandidateFen = null;
@@ -990,13 +1095,49 @@ export class LiveGuidanceCoordinator {
     this.startVerified = false;
     this.startUsedPrior = false;
     this.startPriorResolvedSquares = [];
-    this.resetFusionEvidence();
+    this.resetFusionEvidence(cause, atMs, detail);
   }
 
-  private resetFusionEvidence(): void {
+  /**
+   * Drops all retained fusion evidence and attributes the reset to a cause.
+   *
+   * Tracking loss and occlusion persist for many consecutive frames. Resetting
+   * on every one of those frames would report a "reset storm" that is really a
+   * single evidence episode, so those causes are counted once until usable
+   * evidence is accepted again.
+   */
+  private resetFusionEvidence(
+    cause: FusionResetCause,
+    atMs: number,
+    detail: string | null = null,
+  ): void {
     this.fusion.reset();
     this.fusionSnapshot = null;
     this.lastFusionFrameAccepted = false;
+
+    if (cause === 'tracking_lost' || cause === 'occlusion') {
+      if (this.activeResetEpisode === cause) return;
+      this.activeResetEpisode = cause;
+    } else {
+      this.activeResetEpisode = null;
+    }
+    this.fusionResetCounts[cause] += 1;
+    this.lastFusionReset = { cause, atMs, detail };
+  }
+
+  /** Records a corroborated epoch transition in the lifetime coordinator counts. */
+  private noteEpochTransition(added: FusionFrameResult, atMs: number): void {
+    if (!added.accepted) return;
+    this.activeResetEpisode = null;
+    if (!added.transitionReset) return;
+    this.fusionResetCounts.epoch_transition += 1;
+    this.lastFusionReset = {
+      cause: 'epoch_transition',
+      atMs,
+      detail: added.transitionKind
+        ? `${added.transitionKind}:${(added.transitionSquares ?? []).join(',')}`
+        : null,
+    };
   }
 
   private seedFusionEvidence(
@@ -1006,6 +1147,10 @@ export class LiveGuidanceCoordinator {
   ): void {
     const added = this.fusion.addFrame(observations, quality, nowMs);
     this.lastFusionFrameAccepted = added.accepted;
+    if (added.accepted) {
+      this.activeResetEpisode = null;
+    }
+    this.noteEpochTransition(added, nowMs);
     this.fusionSnapshot = this.fusion.snapshot(nowMs);
   }
 
@@ -1028,7 +1173,12 @@ export class LiveGuidanceCoordinator {
     this.engineResultCount = 0;
     this.engine.stop();
     this.positionConfirmed = Boolean(fen);
-    this.clearAdoptionEvidence();
+    this.clearAdoptionEvidence('user_reset', Date.now(), fen ?? 'session reset');
+    // Session reset starts fresh telemetry; per-cause counts accumulate only
+    // within one live session (the fusion's own counters also reset above).
+    this.fusionResetCounts = emptyFusionResetCounts();
+    this.lastFusionReset = null;
+    this.activeResetEpisode = null;
     this.recognitionReason = null;
     this.recognitionSummary = {
       occupiedSquares: 0,
@@ -1039,7 +1189,6 @@ export class LiveGuidanceCoordinator {
     this.classifiedFrames = 0;
     this.lastInferenceMs = null;
     this.lastCropPrepMs = null;
-    this.resetFusionEvidence();
     this.lastFrameSharpness = null;
     this.lastFrameMeanLuminance = null;
     this.lastAlignmentConfidence = null;

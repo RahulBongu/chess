@@ -468,7 +468,7 @@ test('classified move recognition never revives stale engine analysis', async ()
 
   const afterE4 = classifiedObservations(AFTER_E4_FEN);
   let model = await coordinator.processFrame(PERSPECTIVE_CORNERS, afterE4, false, 0.9);
-  for (let frame = 0; frame < 2; frame += 1) {
+  for (let frame = 0; frame < 3; frame += 1) {
     model = await coordinator.processFrame(PERSPECTIVE_CORNERS, afterE4, false, 0.9);
   }
   assert.equal(model.recognizerStatus, 'move_detected');

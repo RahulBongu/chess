@@ -838,6 +838,18 @@ export default function LiveGameScreen() {
   const positionStateLabel = guidance
     ? guidance.positionState.replace(/_/g, ' ')
     : 'SEARCHING';
+  const fusionResets = guidance?.fusion.resetCounts;
+  const fusionResetTotal = fusionResets
+    ? fusionResets.epoch_transition +
+      fusionResets.tracking_lost +
+      fusionResets.occlusion +
+      fusionResets.confirmed_move +
+      fusionResets.adoption +
+      fusionResets.orientation_change +
+      fusionResets.mode_change +
+      fusionResets.user_reset
+    : 0;
+  const fusionRejects = guidance?.fusion.rejectionCounts;
 
   const frameInfo = lastFrameInfoRef.current;
   const viewTransform = frameInfo
@@ -1213,9 +1225,38 @@ export default function LiveGameScreen() {
             · last reject {guidance?.fusion.lastRejection ?? '—'}
           </Text>
           <Text style={styles.telemetryText}>
+            Resets {fusionResetTotal}: epoch {fusionResets?.epoch_transition ?? 0} · move{' '}
+            {fusionResets?.confirmed_move ?? 0} · adopt {fusionResets?.adoption ?? 0} · track{' '}
+            {fusionResets?.tracking_lost ?? 0} · occl {fusionResets?.occlusion ?? 0} · orient{' '}
+            {fusionResets?.orientation_change ?? 0} · mode {fusionResets?.mode_change ?? 0} · user{' '}
+            {fusionResets?.user_reset ?? 0}
+          </Text>
+          <Text style={styles.telemetryText}>
+            Epoch kinds: occ{' '}
+            {guidance?.fusion.transitionResetsByKind.occupancy ?? 0} · col{' '}
+            {guidance?.fusion.transitionResetsByKind.colour ?? 0} · mixed{' '}
+            {guidance?.fusion.transitionResetsByKind.mixed ?? 0} · disc{' '}
+            {guidance?.fusion.transitionResetsByKind.discontinuity ?? 0} · pending{' '}
+            {guidance?.fusion.pendingTransition
+              ? `${guidance.fusion.pendingTransition.kind} ${guidance.fusion.pendingTransition.squares.join(',')}`
+              : '—'}{' '}
+            · discarded {guidance?.fusion.discardedTransitions ?? 0} · low-conf{' '}
+            {guidance?.fusion.lowConfidenceFluctuations ?? 0}
+            {guidance?.fusion.lastLowConfidenceSquares.length
+              ? ` (${guidance.fusion.lastLowConfidenceSquares.join(',')})`
+              : ''}
+          </Text>
+          <Text style={styles.telemetryText}>
+            Fusion rejects: incomplete {fusionRejects?.incomplete ?? 0} · occl{' '}
+            {fusionRejects?.occlusion ?? 0} · stale {fusionRejects?.stale ?? 0} · blur{' '}
+            {fusionRejects?.blur ?? 0} · focus {fusionRejects?.focus ?? 0} · align{' '}
+            {fusionRejects?.alignment ?? 0} · vis {fusionRejects?.visibility ?? 0} · weight{' '}
+            {fusionRejects?.lowWeight ?? 0}
+          </Text>
+          <Text style={styles.telemetryText}>
             Provisional: {guidance?.provisionalMove?.san ?? '—'} ({guidance?.provisionalStreak ?? 0}
             ) · fusion uncertain {guidance?.fusion.uncertainSquares.length ?? 0} · missing{' '}
-            {guidance?.fusion.missingSquares.length ?? 0} · resets{' '}
+            {guidance?.fusion.missingSquares.length ?? 0} · epoch resets now{' '}
             {guidance?.fusion.transitionResets ?? 0}
           </Text>
           <Text style={styles.telemetryText}>
