@@ -65,6 +65,8 @@ export const FUSION_UNCERTAIN_MARGIN = 0.08;
 export interface FrameQuality {
   /** Normalized focus score (0..1-ish); lower is blurrier. */
   sharpness?: number;
+  /** Mean frame luma in 0..255, used for physical-visibility diagnostics. */
+  meanLuminance?: number;
   /** Explicit motion-blur flag from a caller that has a better estimator. */
   motionBlur?: boolean;
   /** Confidence that the square grid was aligned to the board for this frame (0..1). */

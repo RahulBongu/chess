@@ -35,7 +35,7 @@ import {
 } from '@/vision/liveGuidance';
 import type { BoardOrientation, Point2D } from '@/vision/perspectiveOverlay';
 import type { SquareObservation } from '@/vision/moveRecognizer';
-import { computeFrameSharpness } from '@/vision/frameQuality';
+import { computeFrameSharpness, isFrameObscured } from '@/vision/frameQuality';
 import { FUSION_MIN_SHARPNESS } from '@/vision/temporalFusion';
 import {
   observationsFromSquareProbabilities,
@@ -320,6 +320,10 @@ export default function LiveGameScreen() {
         // high-frequency energy; fusion rejects those frames instead of
         // averaging their square probabilities into the position.
         const focus = computeFrameSharpness(validation.buffer, frameWidth, frameHeight);
+        // A covered lens is physically invisible, not merely uncertain. Keep
+        // this separate from classifier confidence so a visible board with
+        // low-confidence squares still contributes fusion evidence.
+        const lensObscured = isFrameObscured(focus);
         lastFrameInfoRef.current = {
           width: frameWidth,
           height: frameHeight,
@@ -369,7 +373,7 @@ export default function LiveGameScreen() {
         // The native side crops 64 perspective-correct RGB squares and sends
         // only 64 x 13 probabilities back with the next frame.
         let observations: SquareObservation[] | null = null;
-        let handOccluded = false;
+        let handOccluded = lensObscured;
         if (coordinator) {
           const sampleCorners =
             coordinator.getTracker().getCorners() ??
@@ -432,13 +436,12 @@ export default function LiveGameScreen() {
             observations = observationsFromSquareProbabilities(rotated, orientation);
             // NOTE: Low classifier confidence / many uncertain squares is
             // recognition uncertainty on a visible board, not physical occlusion.
-            // Physical occlusion must come from explicit signals: tracking
-            // state, alignment confidence, sharpness/motion-blur gates, or a
-            // caller-provided hand flag. We therefore never mark a frame as
-            // hand-occluded solely from the uncertain-square count; fusion
-            // safely accumulates per-square probabilities and marks ambiguous
+            // Physical occlusion comes from explicit signals: the dark-frame
+            // visibility check above, tracking state, alignment confidence, and
+            // the sharpness/motion-blur gates. Fusion safely accumulates
+            // per-square probabilities for visible frames and marks ambiguous
             // squares uncertain, while start/move gates refuse to invent pieces.
-            handOccluded = false;
+            handOccluded = lensObscured;
           } else {
             diagnostics.counters.classificationFailures += 1;
           }
@@ -475,6 +478,7 @@ export default function LiveGameScreen() {
             trackingProposal,
             {
               sharpness: focus.sharpness,
+              meanLuminance: focus.meanLuminance,
               motionBlur:
                 focus.sampleCount > 0 && focus.sharpness < FUSION_MIN_SHARPNESS,
               alignmentConfidence,
@@ -1201,6 +1205,10 @@ export default function LiveGameScreen() {
             {guidance?.fusion.alignmentConfidence !== null &&
             guidance?.fusion.alignmentConfidence !== undefined
               ? guidance.fusion.alignmentConfidence.toFixed(2)
+              : '—'}{' '}
+            · luma{' '}
+            {guidance?.fusion.meanLuminance !== null && guidance?.fusion.meanLuminance !== undefined
+              ? Math.round(guidance.fusion.meanLuminance)
               : '—'}{' '}
             · last reject {guidance?.fusion.lastRejection ?? '—'}
           </Text>

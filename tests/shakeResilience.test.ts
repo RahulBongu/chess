@@ -20,6 +20,7 @@ import {
 } from '../src/vision/pieceRecognition.ts';
 import {
   computeFrameSharpness,
+  isFrameObscured,
 } from '../src/vision/frameQuality.ts';
 import {
   FUSION_WINDOW_MS,
@@ -331,6 +332,47 @@ test('computeFrameSharpness calculates normalized focus without buffer out-of-bo
   assert.ok(focus.sharpness > 0.010, `Expected sharpness > 0.010, got ${focus.sharpness}`);
   assert.ok(Number.isFinite(focus.sharpness));
   assert.ok(Number.isFinite(focus.laplacianVariance));
+  assert.ok(focus.meanLuminance > 16, 'a lit board must not look like a covered lens');
+  assert.ok(focus.brightFraction > 0.005);
+  assert.equal(isFrameObscured(focus), false);
+});
+
+test('covered lens is detected from dark frames, not from classifier uncertainty', () => {
+  const width = 320;
+  const height = 240;
+  const pixelCount = width * height;
+
+  // A completely covered lens (or black frame).
+  const black = new Uint8Array(pixelCount);
+  const blackFocus = computeFrameSharpness(black, width, height);
+  assert.ok(blackFocus.sampleCount > 0);
+  assert.equal(blackFocus.meanLuminance, 0);
+  assert.equal(blackFocus.brightFraction, 0);
+  assert.equal(isFrameObscured(blackFocus), true);
+
+  // Sensor noise in an otherwise black frame must not defeat the check.
+  const noisy = new Uint8Array(pixelCount);
+  for (let index = 0; index < pixelCount; index += 1) {
+    noisy[index] = (index * 37) % 13;
+  }
+  const noisyFocus = computeFrameSharpness(noisy, width, height);
+  assert.ok(noisyFocus.meanLuminance <= 16);
+  assert.equal(noisyFocus.brightFraction, 0);
+  assert.equal(isFrameObscured(noisyFocus), true);
+
+  // A dim wooden board with visible light squares is uncertain, not obscured.
+  const dimBoard = new Uint8Array(pixelCount);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const light = (Math.floor(x / 40) + Math.floor(y / 40)) % 2 === 0;
+      const piece = x % 40 >= 14 && x % 40 <= 24 && y % 40 >= 10 && y % 40 <= 30;
+      dimBoard[y * width + x] = piece ? 150 : light ? 92 : 38;
+    }
+  }
+  const dimFocus = computeFrameSharpness(dimBoard, width, height);
+  assert.ok(dimFocus.meanLuminance > 16);
+  assert.ok(dimFocus.brightFraction > 0.005);
+  assert.equal(isFrameObscured(dimFocus), false);
 });
 
 test('fusion rejects blurred, stale, incomplete, and misaligned frames', () => {
@@ -999,6 +1041,48 @@ test('genuine occlusion and unreliable geometry do not feed unsuitable observati
   assert.equal(snapshot.acceptedFrames, 0);
   assert.equal(snapshot.hasFullCoverage, false);
   assert.equal(snapshot.observations.length, 0);
+});
+
+test('a covered lens resets evidence and recovers when the board is visible again', async () => {
+  const coordinator = confirmedCoordinator(STARTING_FEN);
+  const start = observationsFromFen(STARTING_FEN);
+  let model = await feed(coordinator, start, 2, 0, {
+    ...QUALITY,
+    meanLuminance: 128,
+  });
+  assert.ok(model.fusion.acceptedFrames >= 1);
+
+  // Fully covered lens: the tracker may still be manually locked, so the
+  // darkness signal is what must stop fusion and report occlusion.
+  model = await coordinator.processFrame(
+    NORMALIZED_CORNERS,
+    start,
+    true,
+    0,
+    500,
+    null,
+    {
+      sharpness: 0.9,
+      meanLuminance: 2,
+      alignmentConfidence: 1,
+      capturedAtMs: 500,
+    },
+  );
+  assert.equal(model.positionState, 'STABILIZING');
+  assert.match(model.instruction, /Hand over board/i);
+  assert.equal(model.fusion.frameAccepted, false);
+  assert.equal(model.fusion.acceptedFrames, 0, 'occluded frames must not leave fusion history');
+  assert.equal(model.fusion.meanLuminance, 2);
+  assert.equal(model.bestMove, null);
+
+  // Uncover the lens: fresh evidence must be accepted again.
+  model = await feed(coordinator, start, 1, 750, {
+    ...QUALITY,
+    meanLuminance: 128,
+  });
+  assert.ok(model.fusion.acceptedFrames >= 1);
+  assert.equal(model.positionState, 'POSITION_CONFIRMED');
+  assert.equal(model.fusion.frameAccepted, true);
 });
 
 test('uncertainty alone cannot confirm a starting position', async () => {

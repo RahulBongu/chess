@@ -123,6 +123,8 @@ export interface LiveFusionState {
   transitionResets: number;
   /** Measured frame focus (normalized Laplacian variance). */
   sharpness: number | null;
+  /** Mean frame luma in 0..255, or null when unavailable. */
+  meanLuminance: number | null;
   /** Grid-alignment confidence supplied by the camera pipeline. */
   alignmentConfidence: number | null;
   /** Whether the most recent complete frame was accepted into the window. */
@@ -258,6 +260,7 @@ export class LiveGuidanceCoordinator {
   private fusionSnapshot: FusionSnapshot | null = null;
   private lastFusionFrameAccepted = false;
   private lastFrameSharpness: number | null = null;
+  private lastFrameMeanLuminance: number | null = null;
   private lastAlignmentConfidence: number | null = null;
   private startUsedPrior = false;
   private startPriorResolvedSquares: string[] = [];
@@ -444,6 +447,10 @@ export class LiveGuidanceCoordinator {
     this.lastFrameSharpness =
       typeof quality.sharpness === 'number' && Number.isFinite(quality.sharpness)
         ? quality.sharpness
+        : null;
+    this.lastFrameMeanLuminance =
+      typeof quality.meanLuminance === 'number' && Number.isFinite(quality.meanLuminance)
+        ? quality.meanLuminance
         : null;
     this.lastAlignmentConfidence =
       typeof quality.alignmentConfidence === 'number' &&
@@ -922,6 +929,7 @@ export class LiveGuidanceCoordinator {
         averageFrameWeight: this.fusionSnapshot?.averageFrameWeight ?? 0,
         transitionResets: this.fusionSnapshot?.transitionResets ?? 0,
         sharpness: this.lastFrameSharpness,
+        meanLuminance: this.lastFrameMeanLuminance,
         alignmentConfidence: this.lastAlignmentConfidence,
         frameAccepted: this.lastFusionFrameAccepted,
       },
@@ -1033,6 +1041,7 @@ export class LiveGuidanceCoordinator {
     this.lastCropPrepMs = null;
     this.resetFusionEvidence();
     this.lastFrameSharpness = null;
+    this.lastFrameMeanLuminance = null;
     this.lastAlignmentConfidence = null;
     this.positionState = fen ? 'POSITION_CONFIRMED' : 'REACQUIRING_BOARD';
   }
