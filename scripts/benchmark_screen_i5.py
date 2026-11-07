@@ -24,7 +24,18 @@ Uncertainty rule kept identical to old benchmark: conf<0.55 or margin<0.08.
 
 Screen results only. Do not mix with physical 3D-board results.
 Production model stays universal150 until held-out evidence says otherwise.
+
+Usage:
+  py -3 scripts/benchmark_screen_i5.py
+  py -3 scripts/benchmark_screen_i5.py --models universal150_prod,wide150
+  py -3 scripts/benchmark_screen_i5.py --json-out dist/other.json --check
+
+Missing optional candidate files are skipped with a warning instead of
+crashing, so a partial checkout still produces a comparable production
+result. `--check` exits non-zero when a board needed the last-resort manual
+fallback, which is the condition that silently corrupted the 5.4I.3 report.
 """
+import argparse
 import cv2, numpy as np, os, glob, json, hashlib
 import onnxruntime as ort
 
@@ -308,16 +319,56 @@ def sha256(p):
     import hashlib
     return hashlib.sha256(open(p,'rb').read()).hexdigest()
 
+def resolve_models(selection):
+    if selection in (None, '', 'all'):
+        names = list(MODELS)
+    else:
+        names = [name.strip() for name in selection.split(',') if name.strip()]
+    resolved = {}
+    for name in names:
+        if name not in MODELS:
+            raise SystemExit(f"unknown model '{name}'; choose from {', '.join(MODELS)}")
+        path = MODELS[name]
+        if not os.path.exists(path):
+            print(f"WARNING skipping {name}: {path} not found", flush=True)
+            continue
+        resolved[name] = path
+    if 'universal150_prod' not in resolved:
+        raise SystemExit('production model universal150_prod is required')
+    return resolved
+
+def is_convex(pts):
+    cross = []
+    for i in range(4):
+        ax, ay = pts[i]
+        bx, by = pts[(i + 1) % 4]
+        cx, cy = pts[(i + 2) % 4]
+        cross.append((bx - ax) * (cy - by) - (by - ay) * (cx - bx))
+    return all(v > 0 for v in cross) or all(v < 0 for v in cross)
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--models', default='all', help="comma list or 'all'")
+    parser.add_argument('--json-out', default='dist/milestone_54i5_screen_benchmark.json')
+    parser.add_argument('--check', action='store_true', help='exit 1 when a board used the last-resort fallback')
+    args = parser.parse_args()
+
+    model_paths = resolve_models(args.models)
+    out_dir = os.path.dirname(args.json_out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
     corner_info={}
     for board_name,img_path,true_grid in BOARDS:
+        if not os.path.exists(img_path):
+            raise SystemExit(f"missing board image: {img_path}")
         corners,method,dbg = get_corners(img_path)
         overlay = save_overlay(img_path,corners,method)
         corner_info[board_name]={'path':img_path,'method':method,'corners':corners.tolist(),'debug':dbg,'overlay':overlay}
         print(board_name, method, corners.tolist(), overlay)
 
     results={}
-    for name,path in MODELS.items():
+    for name,path in model_paths.items():
         sess = ort.InferenceSession(path)
         entry={'onnx_sha256':sha256(path)}
         # device + warp per board
@@ -355,9 +406,23 @@ def main():
             'Screen domain only; physical 3D-board results kept separate.',
         ]
     }
-    with open('dist/milestone_54i5_screen_benchmark.json','w') as f:
+    with open(args.json_out,'w') as f:
         json.dump(out,f,indent=2)
     print(json.dumps(out,indent=2)[:8000])
 
+    problems = []
+    for board_name, info in corner_info.items():
+        if info['method'] == 'manual_fallback':
+            problems.append(f"{board_name} used last-resort manual_fallback")
+        if not is_convex(np.array(info['corners'], dtype=np.float32)):
+            problems.append(f"{board_name} corners are not convex")
+    if args.check:
+        if problems:
+            for problem in problems:
+                print(f"CHECK FAIL {problem}")
+            return 1
+        print("CHECK OK all boards used a verified corner method")
+    return 0
+
 if __name__=='__main__':
-    main()
+    raise SystemExit(main())
