@@ -1283,6 +1283,20 @@ export default function LiveGameScreen() {
               : ''}{' '}
             · rejected {guidance?.recognition.reason ?? '—'}
           </Text>
+          {guidance?.recognition.startGate ? (
+            <Text style={styles.telemetryText}>
+              Start gate: homes W{guidance.recognition.startGate.whiteHomeCount}/B
+              {guidance.recognition.startGate.blackHomeCount} · wrong colour{' '}
+              {guidance.recognition.startGate.wrongColorHomeErrors} · centre{' '}
+              {guidance.recognition.startGate.centerOccupiedCount} · occupied{' '}
+              {guidance.recognition.startGate.totalOccupied}/32 · match{' '}
+              {guidance.recognition.startGate.matchingSquares}/64 · uncertain{' '}
+              {guidance.recognition.startGate.uncertainSquares.length}
+              {guidance.recognition.startGate.uncertainSquares.length
+                ? ` (${guidance.recognition.startGate.uncertainSquares.join(',')})`
+                : ''}
+            </Text>
+          ) : null}
           <Text style={styles.telemetryText}>
             FEN: {guidance?.positionConfirmed ? guidance.fen : (guidance?.recognition.candidateFen ?? '—')}
           </Text>
