@@ -788,6 +788,59 @@ test('standard-start prior resolves at most three genuinely uncertain squares', 
   assert.equal(coordinator.confirmStartingPosition(), true);
 });
 
+test('start gate diagnostics expose home, colour, and occupancy counts', async () => {
+  const coordinator = standardCoordinator();
+  const grid = probabilityGridForFen(STARTING_FEN);
+  splitSquareClass(grid, 'a1', 'white_rook', 'empty');
+  splitSquareClass(grid, 'e2', 'white_pawn', 'empty');
+  splitSquareClass(grid, 'e8', 'black_king', 'empty');
+  const observations = observationsFromSquareProbabilities(grid, 'white_bottom');
+
+  const model = await feed(coordinator, observations, 5, 0);
+  assert.equal(model.startReady, true, model.recognition.reason ?? '');
+  const gate = model.recognition.startGate;
+  assert.ok(gate, 'start gate diagnostics must be populated');
+  assert.equal(gate.whiteHomeCount, 16);
+  assert.equal(gate.blackHomeCount, 16);
+  assert.equal(gate.centerOccupiedCount, 0);
+  assert.equal(gate.wrongColorHomeErrors, 0);
+  assert.equal(gate.totalOccupied, 32);
+  assert.equal(gate.matchingSquares, 64);
+  assert.deepEqual([...gate.uncertainSquares].sort(), ['a1', 'e2', 'e8']);
+});
+
+test('start gate diagnostics keep the squares that blocked the gate', async () => {
+  const coordinator = standardCoordinator();
+  const grid = probabilityGridForFen(STARTING_FEN);
+  splitSquareClass(grid, 'a1', 'white_rook', 'empty');
+  splitSquareClass(grid, 'e2', 'white_pawn', 'empty');
+  splitSquareClass(grid, 'e8', 'black_king', 'empty');
+  splitSquareClass(grid, 'h8', 'black_rook', 'empty');
+  const observations = observationsFromSquareProbabilities(grid, 'white_bottom');
+
+  const model = await feed(coordinator, observations, 5, 0);
+  assert.equal(model.startReady, false);
+  const gate = model.recognition.startGate;
+  assert.ok(gate, 'a failed gate must still report why it failed');
+  assert.equal(gate.uncertainSquares.length, 4);
+  assert.deepEqual([...gate.uncertainSquares].sort(), ['a1', 'e2', 'e8', 'h8']);
+  assert.match(model.recognition.reason ?? '', /too uncertain/i);
+});
+
+test('start gate diagnostics clear when adoption evidence resets', async () => {
+  const coordinator = standardCoordinator();
+  const observations = observationsFromSquareProbabilities(
+    probabilityGridForFen(STARTING_FEN),
+    'white_bottom',
+  );
+  const model = await feed(coordinator, observations, 5, 0);
+  assert.ok(model.recognition.startGate);
+
+  coordinator.setOrientation('black_bottom');
+  const afterReset = await coordinator.processFrame(null, null);
+  assert.equal(afterReset.recognition.startGate, null);
+});
+
 test('four uncertain squares block the standard-start prior', async () => {
   const coordinator = standardCoordinator();
   const grid = probabilityGridForFen(STARTING_FEN);

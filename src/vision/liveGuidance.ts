@@ -113,6 +113,23 @@ export interface LiveRecognitionState {
   startUsedPrior: boolean;
   /** Squares whose starting-layout value came from the bounded prior. */
   startPriorResolvedSquares: string[];
+  /**
+   * Breakdown of the most recent standard-start verification. This makes a
+   * failed automatic start actionable on-device: the uncertain count alone
+   * does not say whether the board is in the wrong position, inverted, or
+   * merely low-confidence. Null outside standard-start mode.
+   */
+  startGate: StartGateDiagnostics | null;
+}
+
+export interface StartGateDiagnostics {
+  matchingSquares: number;
+  whiteHomeCount: number;
+  blackHomeCount: number;
+  centerOccupiedCount: number;
+  wrongColorHomeErrors: number;
+  totalOccupied: number;
+  uncertainSquares: string[];
 }
 
 /** Temporal fusion telemetry for the most recent frame. */
@@ -329,6 +346,7 @@ export class LiveGuidanceCoordinator {
   private lastAlignmentConfidence: number | null = null;
   private startUsedPrior = false;
   private startPriorResolvedSquares: string[] = [];
+  private startGate: StartGateDiagnostics | null = null;
   private positionState: LivePositionState = 'REACQUIRING_BOARD';
   private fusionResetCounts: FusionResetCounts = emptyFusionResetCounts();
   private lastFusionReset: FusionResetEvent | null = null;
@@ -672,6 +690,15 @@ export class LiveGuidanceCoordinator {
               this.startVerified = startCheck.ok;
               this.startUsedPrior = startCheck.usedPrior;
               this.startPriorResolvedSquares = startCheck.priorResolvedSquares;
+              this.startGate = {
+                matchingSquares: startCheck.matchingSquares,
+                whiteHomeCount: startCheck.whiteHomeCount,
+                blackHomeCount: startCheck.blackHomeCount,
+                centerOccupiedCount: startCheck.centerOccupiedCount,
+                wrongColorHomeErrors: startCheck.wrongColorHomeErrors,
+                totalOccupied: startCheck.totalOccupied,
+                uncertainSquares: startCheck.uncertainSquares,
+              };
               const suggestion = suggestPositionFromObservations(averaged, {
                 turn: this.turnHint,
               });
@@ -689,6 +716,7 @@ export class LiveGuidanceCoordinator {
               this.startVerified = false;
               this.startUsedPrior = false;
               this.startPriorResolvedSquares = [];
+              this.startGate = null;
               const candidate = recognizePositionFromObservations(averaged, {
                 turn: this.turnHint,
                 maxUncertainSquares: 0,
@@ -990,6 +1018,7 @@ export class LiveGuidanceCoordinator {
         diagnosticSquares: this.recognitionSummary.diagnosticSquares,
         startUsedPrior: this.startUsedPrior,
         startPriorResolvedSquares: this.startPriorResolvedSquares,
+        startGate: this.startGate,
       },
       fusion: {
         acceptedFrames: this.fusionSnapshot?.acceptedFrames ?? 0,
@@ -1095,6 +1124,7 @@ export class LiveGuidanceCoordinator {
     this.startVerified = false;
     this.startUsedPrior = false;
     this.startPriorResolvedSquares = [];
+    this.startGate = null;
     this.resetFusionEvidence(cause, atMs, detail);
   }
 

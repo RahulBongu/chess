@@ -454,6 +454,12 @@ export interface StartingPositionVerification {
   usedPrior: boolean;
   /** Squares whose class came from the expected layout, not the classifier. */
   priorResolvedSquares: ChessSquare[];
+  /**
+   * Every square the uncertainty rule flagged, including the ones that made
+   * the check fail before prior resolution. Exposed so device telemetry can
+   * explain a failed automatic start instead of only reporting "too uncertain".
+   */
+  uncertainSquares: ChessSquare[];
 }
 
 export interface StartingPositionVerificationOptions {
@@ -497,7 +503,10 @@ function isConfidentContradiction(
   );
 }
 
-function failedStartingVerification(reason: string): StartingPositionVerification {
+function failedStartingVerification(
+  reason: string,
+  uncertainSquares: ChessSquare[] = [],
+): StartingPositionVerification {
   return {
     ok: false,
     fen: '',
@@ -513,6 +522,7 @@ function failedStartingVerification(reason: string): StartingPositionVerificatio
     totalOccupied: 0,
     usedPrior: false,
     priorResolvedSquares: [],
+    uncertainSquares,
   };
 }
 
@@ -596,6 +606,7 @@ export function verifyStartingPosition(
     return {
       ...failedStartingVerification(
         `${uncertainSquares.length} square${uncertainSquares.length === 1 ? '' : 's'} too uncertain to verify a starting position.`,
+        uncertainSquares,
       ),
     };
   }
@@ -608,6 +619,7 @@ export function verifyStartingPosition(
         return {
           ...failedStartingVerification(
             `Confident evidence on ${observation.square} contradicts the expected starting layout.`,
+            uncertainSquares,
           ),
         };
       }
@@ -727,6 +739,7 @@ export function verifyStartingPosition(
     totalOccupied,
     usedPrior: priorResolvedSquares.length > 0,
     priorResolvedSquares,
+    uncertainSquares,
   };
 }
 
