@@ -149,11 +149,50 @@ py -3 scripts/build_screen_capture_manifest.py --capture-root <dir> --out dist/c
 
 ## 7. Evaluation
 
-Run all four candidates on identical crops:
+Run all four candidates on identical crops with the corpus evaluator. It
+samples the classifier path from the manifest corners (no re-detection),
+keeps session splits, refuses mixed `source` values, and reports the
+start-gate replica:
 
 ```powershell
-py -3 scripts/benchmark_screen_i5.py --models universal150_prod,balanced150fix,zenodo_long,wide150 --json-out dist/milestone_54i5_vivo_benchmark.json
+py -3 scripts/evaluate_screen_capture_benchmark.py `
+  --capture-root <capture-root> `
+  --manifest dist/capture_i5/manifest.jsonl `
+  --models universal150_prod,balanced150fix,zenodo_long,wide150 `
+  --splits val_screen `
+  --json-out dist/milestone_54i5_vivo_benchmark.json
 ```
+
+`holdout_screen` is refused unless every selected model is pinned by SHA-256
+in a freeze manifest, and the one-shot use log does not exist. Pin the files
+first; this writes hashes of the current files without evaluating anything:
+
+```powershell
+py -3 scripts/evaluate_screen_capture_benchmark.py `
+  --models universal150_prod,balanced150fix `
+  --write-freeze dist/freeze_i5.json
+```
+
+```json
+{"frozen_at":"2026-11-08T12:00:00+05:30",
+ "models":{"universal150_prod":"<sha256>","balanced150fix":"<sha256>"}}
+```
+
+```powershell
+py -3 scripts/evaluate_screen_capture_benchmark.py `
+  --capture-root <capture-root> --manifest dist/capture_i5/manifest.jsonl `
+  --models universal150_prod,balanced150fix `
+  --splits holdout_screen --freeze-manifest dist/freeze_i5.json `
+  --holdout-use-log dist/holdout_screen_i5_used.json `
+  --json-out dist/milestone_54i5_holdout.json
+```
+
+The use log is written only after a successful evaluation; a second run
+against the same log is refused. Start-gate pass rate is per frame, which is
+stricter than the device's burst-averaged fusion; it does not substitute for
+the on-device automatic-start acceptance. The three laptop frames remain
+scored by `scripts/benchmark_screen_i5.py`; their numbers are a baseline, not
+this corpus.
 
 Report, per split and per condition:
 
