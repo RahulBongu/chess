@@ -138,6 +138,20 @@ py -3 scripts/build_screen_capture_manifest.py --capture-root <dir> --out dist/c
 
 ## 6. QC before any evaluation number is quoted
 
+Before the first frame of a session, run:
+
+```powershell
+py -3 scripts/preflight_vivo_capture.py --init-capture-root
+```
+
+It blocks unless the expected vivo serial is connected and in `device` state,
+the installed APK hash equals the local release APK, the APK and asset model
+both equal the pinned `universal150` SHA-256, and the capture root has valid
+`sessions.json` and session directories. It only reads the device; it never
+installs or captures. Fix every `[BLOCK]` before recording.
+
+After capture:
+
 1. Corner residual: reproject the labelled corners onto the frame; the
    four edges must lie on the board border within 4 px at 1080-wide.
 2. Convex, correctly ordered quad (same checks as
