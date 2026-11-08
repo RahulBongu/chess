@@ -122,6 +122,20 @@ not from the model:
 - Never edit a label to match a prediction. Mislabelled frames are deleted
   with a note in the session log.
 
+Build the corpus manifest with `scripts/build_screen_capture_manifest.py`.
+It refuses a frame without a sidecar, a non-six-field or malformed FEN, an
+unordered/non-convex/small corner quad, a session directory missing from
+`sessions.json`, a split mismatch, a duplicate frame (including the same
+bytes reused in another split), or malformed protocol metadata. It writes
+`manifest.jsonl` plus `summary.json` and exits non-zero on errors, or on
+warnings unless `--allow-warnings` is passed. Run its `--selftest` after any
+change to the schema.
+
+```powershell
+py -3 scripts/build_screen_capture_manifest.py --selftest
+py -3 scripts/build_screen_capture_manifest.py --capture-root <dir> --out dist/capture_i5
+```
+
 ## 6. QC before any evaluation number is quoted
 
 1. Corner residual: reproject the labelled corners onto the frame; the
