@@ -58,6 +58,16 @@ class LiveCameraModule : Module() {
       AsyncFunction("setClassificationEnabled") { view: LiveCameraView, enabled: Boolean ->
         view.setClassificationEnabled(enabled)
       }
+
+      // Milestone 5.4I.5 Part B debug capture dump. Hard-gated to debuggable
+      // builds inside the view; a release APK ignores these calls.
+      AsyncFunction("setCaptureDumpSession") { view: LiveCameraView, session: String ->
+        view.setCaptureDumpSession(session)
+      }
+
+      AsyncFunction("clearCaptureDump") { view: LiveCameraView ->
+        view.clearCaptureDump()
+      }
     }
   }
 }

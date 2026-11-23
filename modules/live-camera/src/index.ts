@@ -34,6 +34,14 @@ export interface LiveCameraViewHandle {
   setClassificationEnabled(enabled: boolean): Promise<void>;
   releaseFrame(): Promise<void>;
   releaseTrackingFrame(): Promise<void>;
+  /**
+   * Milestone 5.4I.5 Part B: start the debug-only classifier-input frame dump
+   * for a capture session (e.g. "s01"). No-op on release builds. Frames land in
+   * the app's external files dir under i5capture/<session>/.
+   */
+  setCaptureDumpSession(session: string): Promise<void>;
+  /** Stop the debug capture dump. */
+  clearCaptureDump(): Promise<void>;
 }
 
 export interface LiveCameraViewProps {

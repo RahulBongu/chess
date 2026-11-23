@@ -1,11 +1,15 @@
 package expo.modules.livecamera
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Size
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import java.io.File
+import java.io.FileOutputStream
+import java.nio.ByteBuffer
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -72,6 +76,23 @@ class LiveCameraView(
   private var trackingAnalysis: ImageAnalysis? = null
   private var previewStreamObserver: Observer<PreviewView.StreamState>? = null
   private val squareClassifier by lazy { ChessSquareClassifier(context) }
+
+  // --- Milestone 5.4I.5 debug capture dump (Part B) -------------------------
+  // Writes the exact classifier-input frame (RGBA), normalized corners and the
+  // 64x13 scores to app-specific external storage so an offline replay can
+  // reproduce the device path bit-for-bit. DEBUG ONLY: the dump is hard-gated
+  // on ApplicationInfo.FLAG_DEBUGGABLE, so a release APK can never write frames
+  // even if the session prop is set. See docs/VIVO_SCREEN_CAPTURE_PROTOCOL_54I5.md.
+  private val captureDumpAllowed: Boolean by lazy {
+    (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+  }
+
+  @Volatile
+  private var captureDumpSession: String? = null
+  private val dumpExecutor = Executors.newSingleThreadExecutor()
+  private val dumpSeq = java.util.concurrent.atomic.AtomicInteger(0)
+  private val dumpWrittenCount = java.util.concurrent.atomic.AtomicInteger(0)
+  private val dumpDroppedCount = java.util.concurrent.atomic.AtomicInteger(0)
 
   @Volatile
   private var classificationEnabled = true
@@ -175,6 +196,28 @@ class LiveCameraView(
     }
   }
 
+  /**
+   * Starts (or switches) the debug capture dump for [session]. No-op on release
+   * builds. Frames are written to i5capture/<session>/ under app external files.
+   */
+  fun setCaptureDumpSession(session: String) {
+    if (!captureDumpAllowed) {
+      android.util.Log.w("LiveCameraDiag", "capture dump ignored: not a debuggable build")
+      return
+    }
+    if (session.isBlank()) {
+      captureDumpSession = null
+      return
+    }
+    captureDumpSession = session
+    dumpSeq.set(0)
+    android.util.Log.i("LiveCameraDiag", "capture dump started session=$session")
+  }
+
+  fun clearCaptureDump() {
+    captureDumpSession = null
+  }
+
   fun stopCamera() {
     cameraProvider?.unbindAll()
     cameraProvider = null
@@ -184,6 +227,7 @@ class LiveCameraView(
     analysisBusy.set(false)
     trackingBusy.set(false)
     classificationCorners = null
+    captureDumpSession = null
     analysisDroppedCount.set(0)
     analysisAnalyzedCount.set(0)
     trackingDroppedCount.set(0)
@@ -203,6 +247,106 @@ class LiveCameraView(
     }
     cameraExecutor.shutdown()
     trackingExecutor.shutdown()
+    dumpExecutor.shutdown()
+  }
+
+  /**
+   * Snapshots the classifier input and queues a lossless dump on a dedicated
+   * executor so PNG compression never blocks the camera analysis loop. Any
+   * failure is swallowed: a dump problem must not drop camera frames.
+   */
+  private fun maybeDumpCaptureFrame(
+    rgba: ByteArray,
+    width: Int,
+    height: Int,
+    corners: DoubleArray?,
+    scores: FloatArray?,
+    cropPrepMs: Long,
+    onnxMs: Long,
+    requestId: Int,
+  ) {
+    val session = captureDumpSession ?: return
+    if (!captureDumpAllowed || scores == null || corners == null || corners.size != 8) {
+      return
+    }
+    val rgbaCopy = rgba.copyOf()
+    val cornersCopy = corners.copyOf()
+    val scoresCopy = scores.copyOf()
+    val seq = dumpSeq.getAndIncrement()
+    val timestampMs = System.currentTimeMillis()
+    try {
+      dumpExecutor.execute {
+        runCatching {
+          writeCaptureFrame(
+            session, seq, rgbaCopy, width, height, cornersCopy, scoresCopy,
+            cropPrepMs, onnxMs, requestId, timestampMs,
+          )
+        }.onSuccess {
+          dumpWrittenCount.incrementAndGet()
+        }.onFailure { error ->
+          dumpDroppedCount.incrementAndGet()
+          android.util.Log.w("LiveCameraDiag", "capture dump write failed", error)
+        }
+      }
+    } catch (_: java.util.concurrent.RejectedExecutionException) {
+      dumpDroppedCount.incrementAndGet()
+    }
+  }
+
+  private fun writeCaptureFrame(
+    session: String,
+    seq: Int,
+    rgba: ByteArray,
+    width: Int,
+    height: Int,
+    corners: DoubleArray,
+    scores: FloatArray,
+    cropPrepMs: Long,
+    onnxMs: Long,
+    requestId: Int,
+    timestampMs: Long,
+  ) {
+    val base = context.getExternalFilesDir(null) ?: return
+    val dir = File(base, "i5capture/$session").apply { mkdirs() }
+    val name = "frame_%05d".format(seq)
+
+    // Android ARGB_8888 stores pixels as R,G,B,A in native memory, so the RGBA
+    // classifier buffer copies straight in; PNG compression is lossless.
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(rgba))
+    FileOutputStream(File(dir, "$name.png")).use { out ->
+      bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+    }
+    bitmap.recycle()
+
+    val scoresArray = org.json.JSONArray()
+    for (square in 0 until 64) {
+      val row = org.json.JSONArray()
+      for (cls in 0 until 13) {
+        row.put(scores[square * 13 + cls].toDouble())
+      }
+      scoresArray.put(row)
+    }
+    val cornersArray = org.json.JSONArray()
+    for (value in corners) {
+      cornersArray.put(value)
+    }
+    val capturedAt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US)
+      .format(java.util.Date(timestampMs))
+    val sidecar = org.json.JSONObject()
+      .put("frame", "$name.png")
+      .put("session_id", session)
+      .put("source", "native-dump")
+      .put("device", android.os.Build.MODEL)
+      .put("captured_at", capturedAt)
+      .put("timestamp_ms", timestampMs)
+      .put("frame_size", org.json.JSONArray().put(width).put(height))
+      .put("corners_norm", cornersArray)
+      .put("scores", scoresArray)
+      .put("crop_prep_ms", cropPrepMs)
+      .put("onnx_ms", onnxMs)
+      .put("classification_request_id", requestId)
+    File(dir, "$name.json").writeText(sidecar.toString())
   }
 
   var trackingEnabled: Boolean = true
@@ -431,6 +575,17 @@ class LiveCameraView(
               }
             }
           }
+
+          maybeDumpCaptureFrame(
+            rgbaBytes,
+            outputWidth,
+            outputHeight,
+            corners,
+            inferenceScores,
+            cropPrepMs,
+            inferenceMs,
+            inferenceRequestId,
+          )
 
           analysisBusy.set(true)
           if (cameraReadyEmitted.compareAndSet(false, true)) {
