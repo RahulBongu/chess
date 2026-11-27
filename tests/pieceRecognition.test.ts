@@ -14,6 +14,7 @@ import {
   rotateSquareProbabilities,
   softmaxSquareScores,
   suggestPositionFromObservations,
+  verifyStartingPosition,
   type PieceClass,
 } from '../src/vision/pieceRecognition.ts';
 import { MoveRecognizer, type SquareObservation } from '../src/vision/moveRecognizer.ts';
@@ -69,6 +70,38 @@ function feedStableFrames(
   }
   return last;
 }
+
+test('verifyStartingPosition reports the uncertain squares even when the bounded prior resolves them', () => {
+  const observations = observationsForFen(STARTING_FEN).map((observation) =>
+    observation.square === 'a1' || observation.square === 'e8'
+      ? { ...observation, occupied: false, uncertain: true }
+      : observation,
+  );
+  const verified = verifyStartingPosition(observations, 'white_bottom', {
+    maxUncertainSquares: 3,
+    priorFen: STARTING_FEN,
+  });
+  assert.equal(verified.ok, true, verified.reason ?? '');
+  assert.deepEqual([...verified.uncertainSquares].sort(), ['a1', 'e8']);
+  assert.deepEqual([...verified.priorResolvedSquares].sort(), ['a1', 'e8']);
+
+  const fourUncertain = observations.map((observation) =>
+    observation.square === 'e2' || observation.square === 'h8'
+      ? { ...observation, occupied: false, uncertain: true }
+      : observation,
+  );
+  const blocked = verifyStartingPosition(fourUncertain, 'white_bottom', {
+    maxUncertainSquares: 3,
+    priorFen: STARTING_FEN,
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.uncertainSquares.length, 4);
+  assert.deepEqual([...blocked.uncertainSquares].sort(), ['a1', 'e2', 'e8', 'h8']);
+
+  const strict = verifyStartingPosition(observations, 'white_bottom', { maxUncertainSquares: 0 });
+  assert.equal(strict.ok, false);
+  assert.equal(strict.uncertainSquares.length, 2);
+});
 
 test('a FEN-seeded baseline treats the next matching frame as steady, not a move', () => {
   const recognizer = new MoveRecognizer();
