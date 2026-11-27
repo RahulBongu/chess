@@ -246,6 +246,8 @@ class PreflightTests(unittest.TestCase):
                     return 0, b"package:/data/app/base.apk\n", b""
                 if "sha256sum" in args:
                     return 0, (apk_hash + "  /data/app/base.apk\n").encode(), b""
+                if "test" in args and "-w" in args:
+                    return 0, b"", b""
                 return 1, b"", b"unexpected"
 
             def run(**overrides):
@@ -284,6 +286,13 @@ class PreflightTests(unittest.TestCase):
             report = run(capture_root=partial_root)
             self.assertFalse(report["ok"])
             self.assertTrue(any(check["name"] == "split-coverage" for check in report["blockers"]))
+
+            unwritable = lambda args, timeout=60: (
+                (1, b"", b"") if "test" in args and "-w" in args else runner(args)
+            )
+            report = run(run_adb=unwritable)
+            self.assertFalse(report["ok"])
+            self.assertTrue(any(check["name"] == "dump-target" for check in report["blockers"]))
         finally:
             shutil.rmtree(temp, ignore_errors=True)
 

@@ -202,6 +202,17 @@ def evaluate_preflight(
             else:
                 add("installed-hash", "ok", installed_hash)
 
+        dump_parent = f"/sdcard/Android/data/{package}/files"
+        code, _stdout, _stderr = run_adb(["-s", serial, "shell", "test", "-w", dump_parent])
+        if code == 0:
+            add("dump-target", "ok", f"{dump_parent} is writable for i5capture")
+        else:
+            add(
+                "dump-target",
+                "block",
+                f"{dump_parent} is not writable; launch the app once or fix storage permission before capture",
+            )
+
     local_apk_hash = None
     if not apk.is_file():
         add("local-apk", "block", f"missing {apk}; build the arm64 release APK first")
@@ -355,6 +366,8 @@ def selftest() -> int:
                 return 0, (apk_hash + "  /data/app/base.apk\n").encode(), b""
             if "exec-out" in args:
                 return 0, apk_bytes, b""
+            if "test" in args and "-w" in args:
+                return 0, b"", b""
             return 1, b"", b"unexpected"
 
         def run(**overrides):
@@ -429,6 +442,14 @@ def selftest() -> int:
 
         report = run(run_adb=fallback_hash)
         check(report["ok"] is True, f"exec-out hash fallback blocked: {report['blockers']}")
+
+        def unwritable_dump(args, timeout=60):
+            if "test" in args and "-w" in args:
+                return 1, b"", b""
+            return base_runner(args)
+
+        report = run(run_adb=unwritable_dump)
+        check(report["ok"] is False, "unwritable capture dump target was not blocked")
 
         bad_model = temp / "other.onnx"
         bad_model.write_bytes(b"different-model")
