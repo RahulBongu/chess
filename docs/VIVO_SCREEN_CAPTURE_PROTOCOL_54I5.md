@@ -150,6 +150,11 @@ both equal the pinned `universal150` SHA-256, and the capture root has valid
 `sessions.json` and session directories. It only reads the device; it never
 installs or captures. Fix every `[BLOCK]` before recording.
 
+`py -3 scripts/verify_screen_benchmark_contract.py` pins the evaluator,
+manifest builder, preflight and report tooling constants (uncertainty rule,
+start prior ceiling, contradiction rule, vivo serial, production model hash)
+and runs each tool's self-test. It must pass before any result is quoted.
+
 After capture:
 
 1. Corner residual: reproject the labelled corners onto the frame; the

@@ -22,6 +22,7 @@ import build_screen_capture_manifest as manifest  # noqa: E402
 import evaluate_screen_capture_benchmark as evaluator  # noqa: E402
 import preflight_vivo_capture as preflight  # noqa: E402
 import report_screen_benchmark_i5 as reporter  # noqa: E402
+import verify_screen_benchmark_contract as contract  # noqa: E402
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -295,6 +296,29 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(reporter.promotion_verdict(holdout)["keep_production"], "universal150_prod")
         holdout["results"]["holdout_screen"]["models"]["candidate"] = metrics(0.9, 0.7, 0.95)
         self.assertEqual(reporter.promotion_verdict(holdout).get("promote"), "candidate")
+
+
+class ContractTests(unittest.TestCase):
+    def test_contract_detects_tampered_evaluator_threshold(self):
+        temp = Path(tempfile.mkdtemp(prefix="i5tool_contract_"))
+        original = contract.EVALUATOR
+        try:
+            tampered = temp / "evaluate_screen_capture_benchmark.py"
+            text = original.read_text(encoding="utf-8").replace("UNCERT_CONF = 0.55", "UNCERT_CONF = 0.99")
+            tampered.write_text(text, encoding="utf-8")
+            contract.EVALUATOR = tampered
+            contract.failures.clear()
+            contract.passes.clear()
+            contract.check_tooling_contract()
+            self.assertTrue(
+                any("uncertainty confidence" in failure for failure in contract.failures),
+                contract.failures,
+            )
+        finally:
+            contract.EVALUATOR = original
+            contract.failures.clear()
+            contract.passes.clear()
+            shutil.rmtree(temp, ignore_errors=True)
 
 
 if __name__ == "__main__":

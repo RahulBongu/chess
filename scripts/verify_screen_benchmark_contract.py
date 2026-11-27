@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -26,6 +27,11 @@ ASSET = ROOT / "modules/live-camera/android/src/main/assets/rgb_square_classifie
 PRODUCTION = ROOT / "models/rgb_square_classifier_v1_balanced_strong_universal150.onnx"
 KOTLIN = ROOT / "modules/live-camera/android/src/main/java/expo/modules/livecamera/ChessSquareClassifier.kt"
 TRAIN = ROOT / "scripts/train_rgb_square_model.py"
+EVALUATOR = ROOT / "scripts/evaluate_screen_capture_benchmark.py"
+MANIFEST_BUILDER = ROOT / "scripts/build_screen_capture_manifest.py"
+PREFLIGHT = ROOT / "scripts/preflight_vivo_capture.py"
+REPORTER = ROOT / "scripts/report_screen_benchmark_i5.py"
+CAMERA_VIEW = ROOT / "modules/live-camera/android/src/main/java/expo/modules/livecamera/LiveCameraView.kt"
 
 EXPECTED_CLASSES = [
     "empty",
@@ -219,8 +225,83 @@ def check_benchmark_output() -> None:
         )
 
 
+def check_tooling_contract() -> None:
+    """Pins the offline capture/eval/report tools against silent drift."""
+    tools = {
+        "evaluator": EVALUATOR,
+        "manifest builder": MANIFEST_BUILDER,
+        "preflight": PREFLIGHT,
+        "reporter": REPORTER,
+    }
+    texts: dict[str, str] = {}
+    for name, path in tools.items():
+        if not path.exists():
+            failures.append(f"missing {name}: {path}")
+            continue
+        texts[name] = read_text(path)
+
+    evaluator_text = texts.get("evaluator", "")
+    for snippet, label in (
+        ("UNCERT_CONF = 0.55", "evaluator uncertainty confidence pinned at 0.55"),
+        ("UNCERT_MARGIN = 0.08", "evaluator uncertainty margin pinned at 0.08"),
+        ("START_MAX_UNCERTAIN = 3", "evaluator start prior ceiling pinned at 3"),
+        ("CONTRADICTION_PROB = 0.80", "evaluator contradiction probability pinned at 0.80"),
+        ("CONTRADICTION_MARGIN = 0.40", "evaluator contradiction margin pinned at 0.40"),
+        ('SOURCE_VALUES = ("native-dump", "screencap")', "evaluator source values pinned"),
+        ('"holdout_screen" not in splits', "evaluator holdout guard present"),
+        ('def burst_gate(', "evaluator exposes burst-averaged start gate"),
+    ):
+        check(snippet in evaluator_text, label)
+
+    builder_text = texts.get("manifest builder", "")
+    check("MIN_BURST_FRAMES = 10" in builder_text, "manifest builder burst target pinned at 10")
+    check(
+        "corners_norm must be a flat list of 8 numbers" in builder_text,
+        "manifest builder enforces the flat corner schema",
+    )
+    check("invalid castling rights" in builder_text, "manifest builder validates castling rights")
+
+    preflight_text = texts.get("preflight", "")
+    for snippet, label in (
+        ('EXPECTED_SERIAL = "10BE2A1B5Q00054"', "preflight vivo serial pinned"),
+        ('PACKAGE = "com.anonymous.aichessnavigator"', "preflight package pinned"),
+        (
+            'PRODUCTION_MODEL_SHA256 = "4a78b7ad6145f2849f6d7ef18be6c1c4b124f909f984131f860820f90ddfffab"',
+            "preflight production model hash pinned",
+        ),
+    ):
+        check(snippet in preflight_text, label)
+
+    check(
+        CAMERA_VIEW.exists() and "FLAG_DEBUGGABLE" in read_text(CAMERA_VIEW),
+        "capture dump is hard-gated to debuggable builds",
+    )
+
+    reporter_text = texts.get("reporter", "")
+    check('PRODUCTION = "universal150_prod"' in reporter_text, "reporter production model pinned")
+    check("def promotion_verdict(" in reporter_text, "reporter promotion rule present")
+
+    for name, path in tools.items():
+        if not path.exists():
+            continue
+        try:
+            result = subprocess.run(
+                [sys.executable, str(path), "--selftest"],
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+            check(result.returncode == 0, f"{name} self-test passes", result.stdout.decode("utf-8", "replace").strip()[-200:])
+        except (OSError, subprocess.TimeoutExpired) as error:
+            check(False, f"{name} self-test passes", str(error))
+
+
 def main() -> int:
-    missing_required = [str(path) for path in (ASSET, PRODUCTION, KOTLIN, TRAIN, MANIFEST) if not path.exists()]
+    missing_required = [
+        str(path)
+        for path in (ASSET, PRODUCTION, KOTLIN, TRAIN, MANIFEST, EVALUATOR, MANIFEST_BUILDER, PREFLIGHT, REPORTER, CAMERA_VIEW)
+        if not path.exists()
+    ]
     if missing_required:
         for path in missing_required:
             print(f"MISSING {path}")
@@ -231,6 +312,7 @@ def main() -> int:
     check_training_contract()
     check_manifest()
     check_benchmark_output()
+    check_tooling_contract()
 
     for name in passes:
         print(f"PASS {name}")
