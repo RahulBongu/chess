@@ -203,8 +203,10 @@ py -3 scripts/evaluate_screen_capture_benchmark.py `
 
 The use log is written only after a successful evaluation; a second run
 against the same log is refused. Start-gate pass rate is per frame, which is
-stricter than the device's burst-averaged fusion; it does not substitute for
-the on-device automatic-start acceptance. The three laptop frames remain
+stricter than the device's burst-averaged fusion; the JSON also reports a
+`burst` view where probabilities are averaged per
+`(session, position, condition)` cell before scoring. Neither replaces the
+on-device automatic-start acceptance. The three laptop frames remain
 scored by `scripts/benchmark_screen_i5.py`; their numbers are a baseline, not
 this corpus.
 

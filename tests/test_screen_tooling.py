@@ -125,6 +125,21 @@ class EvaluatorTests(unittest.TestCase):
         self.assertFalse(gate["ok"])
         self.assertEqual(gate["confident_contradictions"], ["a1"])
 
+    def test_burst_averaged_metrics_and_gate(self):
+        probs = evaluator.perfect_start_probs()
+        truth = evaluator.parse_fen_to_classes(START_FEN)
+        metrics = evaluator.burst_metrics([probs, probs.copy()], truth)
+        self.assertEqual(metrics["correct"], 64)
+        self.assertTrue(evaluator.burst_gate([probs, probs.copy()], "white_bottom")["ok"])
+        weak = probs.copy()
+        for index in (56, 57, 58, 59):
+            weak[index] = 0.01 / 12.0
+            weak[index][evaluator.CLASS_TO_INDEX["black_pawn"]] = 0.60
+            weak[index][evaluator.CLASS_TO_INDEX["empty"]] = 0.40
+        self.assertFalse(evaluator.burst_gate([weak, weak.copy()], "white_bottom")["ok"])
+        with self.assertRaises(evaluator.FatalError):
+            evaluator.burst_probabilities([])
+
     def test_calibration_source_and_holdout_guards(self):
         self.assertEqual(evaluator.expected_calibration_error([(1.0, True)] * 50)["ece"], 0.0)
         self.assertAlmostEqual(evaluator.expected_calibration_error([(1.0, False)] * 50)["ece"], 1.0)

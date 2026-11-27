@@ -450,6 +450,13 @@ def finalize(acc: dict) -> dict:
     }
 
 
+def finalize_frame(metrics: dict) -> dict:
+    """Same shape as `finalize` for a single frame (used by burst cells)."""
+    acc = new_accumulator()
+    add_frame(acc, metrics, None)
+    return finalize(acc)
+
+
 def mean_or_none(values: list[float | None]) -> float | None:
     usable = [value for value in values if value is not None]
     return round(sum(usable) / len(usable), 4) if usable else None
@@ -471,6 +478,41 @@ def cell_weighted(cells: list[dict]) -> dict:
         "mean_uncertain": mean_or_none([cell["mean_uncertain"] for cell in cells]),
         "ece": mean_or_none([cell["calibration"]["ece"] for cell in cells]),
     }
+
+
+def burst_probabilities(probabilities: list[np.ndarray]) -> np.ndarray:
+    """Mean of frame probability vectors for one (session, position, condition) cell."""
+    if not probabilities:
+        raise FatalError("burst has no frames")
+    stacked = np.stack(probabilities).astype(np.float64)
+    averaged = stacked.mean(axis=0)
+    total = averaged.sum(axis=1, keepdims=True)
+    # Re-normalise after averaging: softmax outputs are already normalised, but
+    # float accumulation can drift by ~1e-15 and calibration bins trust [0,1].
+    return (averaged / total).astype(np.float32)
+
+
+def burst_metrics(probabilities: list[np.ndarray], truth: list[str]) -> dict:
+    """Square metrics on one burst-averaged board (fusion-like read)."""
+    return square_metrics(burst_probabilities(probabilities), truth)
+
+
+def burst_gate(probabilities: list[np.ndarray], orientation: str) -> dict:
+    """Start gate on one burst-averaged board, closer to device fusion."""
+    return start_gate(burst_probabilities(probabilities), orientation)
+
+
+def cell_key(record: dict) -> tuple[str, ...]:
+    """Identity of one (session, position, condition) burst."""
+    return (
+        str(record["session_id"]),
+        str(record["position_id"]),
+        str(record.get("theme")),
+        str(record.get("brightness_pct")),
+        str(record.get("distance")),
+        str(record.get("angle_deg")),
+        str(record.get("source")),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -656,15 +698,7 @@ def structure_groups() -> dict:
 def add_to_groups(groups: dict, record: dict, metrics: dict, gate: dict | None) -> None:
     session = record["session_id"]
     position = record["position_id"]
-    cell = (
-        session,
-        position,
-        str(record.get("theme")),
-        str(record.get("brightness_pct")),
-        str(record.get("distance")),
-        str(record.get("angle_deg")),
-        str(record.get("source")),
-    )
+    cell = cell_key(record)
     add_frame(groups["by_session"].setdefault(session, new_accumulator()), metrics, gate)
     add_frame(groups["by_position"].setdefault(position, new_accumulator()), metrics, gate)
     add_frame(groups["by_cell"].setdefault(cell, new_accumulator()), metrics, gate)
@@ -689,6 +723,7 @@ def run_models(
                 name: {
                     "frame_weighted": None,
                     "cell_weighted": None,
+                    "burst": None,
                     "by_session": {},
                     "by_position": {},
                     "by_condition": {field: {} for field in CONDITION_FIELDS},
@@ -705,6 +740,9 @@ def run_models(
     groups = {
         split: {name: structure_groups() for name in model_paths}
         for split in splits
+    }
+    burst_sums: dict[tuple[str, str], dict[tuple[str, ...], dict]] = {
+        (split, name): {} for split in splits for name in model_paths
     }
 
     frames_done = 0
@@ -738,6 +776,15 @@ def run_models(
                 )
                 add_frame(split_acc[split][name], metrics, gate)
                 add_to_groups(groups[split][name], record, metrics, gate)
+                burst_cell = burst_sums[(split, name)].setdefault(
+                    cell_key(record),
+                    {"sum": np.zeros((64, len(benchmark.CLASSES)), dtype=np.float64),
+                     "frames": 0,
+                     "orientation": record.get("orientation", "white_bottom"),
+                     "truth": parse_fen_to_classes(record["fen"])},
+                )
+                burst_cell["sum"] += frame_probs.astype(np.float64)
+                burst_cell["frames"] += 1
         frames_done += len(chunk)
         print(f"evaluated {frames_done}/{len(selected_records)} frames", flush=True)
 
@@ -755,6 +802,30 @@ def run_models(
             entry["cell_weighted"] = cell_weighted(
                 [finalize(acc) for acc in groups[split][name]["by_cell"].values()]
             )
+            # Burst-averaged read: one board per (session, position, condition)
+            # cell, averaged before scoring. This is closer to the device's
+            # multi-frame fusion than the per-frame metrics above.
+            burst_acc = new_accumulator()
+            burst_by_cell: dict[str, dict] = {}
+            for cell, cell_data in burst_sums[(split, name)].items():
+                averaged = cell_data["sum"] / cell_data["frames"]
+                averaged = (averaged / averaged.sum(axis=1, keepdims=True)).astype(np.float32)
+                cell_truth = orient_truth(cell_data["truth"], cell_data["orientation"])
+                cell_metrics = square_metrics(averaged, cell_truth)
+                cell_gate = (
+                    start_gate(averaged, cell_data["orientation"])
+                    if cell[1] == "start" else None
+                )
+                add_frame(burst_acc, cell_metrics, cell_gate)
+                burst_by_cell["/".join(cell)] = {
+                    "frames": cell_data["frames"],
+                    "metrics": finalize_frame(cell_metrics),
+                    "start_gate": cell_gate,
+                }
+            entry["burst"] = {
+                "summary": finalize(burst_acc),
+                "by_cell": burst_by_cell,
+            }
             entry["by_session"] = {
                 key: finalize(acc) for key, acc in groups[split][name]["by_session"].items()
             }
