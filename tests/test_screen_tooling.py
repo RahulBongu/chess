@@ -21,6 +21,7 @@ import benchmark_screen_i5 as benchmark  # noqa: E402
 import build_screen_capture_manifest as manifest  # noqa: E402
 import evaluate_screen_capture_benchmark as evaluator  # noqa: E402
 import preflight_vivo_capture as preflight  # noqa: E402
+import report_screen_benchmark_i5 as reporter  # noqa: E402
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -251,6 +252,49 @@ class PreflightTests(unittest.TestCase):
             self.assertTrue(any(check["name"] == "installed-matches-local" for check in report["blockers"]))
         finally:
             shutil.rmtree(temp, ignore_errors=True)
+
+
+class ReportTests(unittest.TestCase):
+    def test_report_keeps_production_without_holdout_and_enforces_promotion_rule(self):
+        def metrics(exact, occupied, colour, wrong=0.0):
+            return {
+                "frame_weighted": {
+                    "frames": 10,
+                    "per_square_exact_rate": exact,
+                    "board_exact": "1/10",
+                    "occupancy_rate": 0.9,
+                    "occupied_exact": "20/32",
+                    "occupied_exact_rate": occupied,
+                    "colour": "30/32",
+                    "colour_rate": colour,
+                    "mean_confidence": 0.8,
+                    "mean_uncertain": 4.0,
+                    "calibration": {"ece": 0.08},
+                    "start_gate": {"pass": "8/10", "mean_wrong_colour": wrong},
+                }
+            }
+
+        report = {
+            "manifest": "m.jsonl",
+            "manifest_sha256": "a" * 64,
+            "source": "native-dump",
+            "splits": ["val_screen"],
+            "models": {"universal150_prod": {}},
+            "results": {"val_screen": {"models": {"universal150_prod": metrics(0.8, 0.6, 0.9)}}},
+        }
+        text = reporter.render(report)
+        self.assertIn("val_screen", text)
+        self.assertIn("Production stays", text)
+        self.assertEqual(reporter.promotion_verdict(report)["keep_production"], "universal150_prod")
+
+        holdout = json.loads(json.dumps(report))
+        holdout["results"]["holdout_screen"] = holdout["results"]["val_screen"]
+        holdout["results"]["holdout_screen"]["models"]["candidate"] = metrics(0.7, 0.7, 0.95)
+        self.assertEqual(reporter.promotion_verdict(holdout)["keep_production"], "universal150_prod")
+        holdout["results"]["holdout_screen"]["models"]["candidate"] = metrics(0.9, 0.7, 0.95, wrong=1.0)
+        self.assertEqual(reporter.promotion_verdict(holdout)["keep_production"], "universal150_prod")
+        holdout["results"]["holdout_screen"]["models"]["candidate"] = metrics(0.9, 0.7, 0.95)
+        self.assertEqual(reporter.promotion_verdict(holdout).get("promote"), "candidate")
 
 
 if __name__ == "__main__":
