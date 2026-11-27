@@ -144,6 +144,19 @@ class EvaluatorTests(unittest.TestCase):
         with self.assertRaises(evaluator.FatalError):
             evaluator.burst_probabilities([])
 
+    def test_strict_coverage_detects_missing_condition_values(self):
+        records = [
+            {"split": "train_screen", "theme": "brown"},
+            {"split": "val_screen", "theme": "brown"},
+            {"split": "holdout_screen", "theme": "green"},
+        ]
+        errors = evaluator.strict_coverage_errors(records, ["train_screen", "val_screen", "holdout_screen"])
+        self.assertTrue(any("theme=brown missing" in error for error in errors))
+        self.assertTrue(any("theme=green missing" in error for error in errors))
+        self.assertEqual(
+            evaluator.strict_coverage_errors(records[:2], ["train_screen", "val_screen"]), []
+        )
+
     def test_manifest_sessions_are_cross_checked(self):
         temp = Path(tempfile.mkdtemp(prefix="i5tool_sessions_"))
         try:

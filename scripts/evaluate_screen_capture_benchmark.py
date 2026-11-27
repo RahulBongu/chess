@@ -657,6 +657,22 @@ def coverage_report(records: list[dict], splits: list[str]) -> tuple[dict, list[
     return coverage, warnings
 
 
+def strict_coverage_errors(records: list[dict], splits: list[str]) -> list[str]:
+    """Protocol check: every condition value appears in every requested split."""
+    errors: list[str] = []
+    for field in CONDITION_FIELDS:
+        values = sorted({str(record.get(field)) for record in records})
+        for value in values:
+            missing = [
+                split
+                for split in splits
+                if not any(str(record.get(field)) == value and record["split"] == split for record in records)
+            ]
+            if missing:
+                errors.append(f"{field}={value} missing from split(s) {missing}")
+    return errors
+
+
 def model_hashes(model_paths: dict[str, str]) -> dict[str, str]:
     return {name: sha256_file(Path(path)) for name, path in model_paths.items()}
 
@@ -1051,6 +1067,11 @@ def main() -> int:
     parser.add_argument("--models", default="all", help="comma list or 'all'")
     parser.add_argument("--splits", default="train_screen,val_screen")
     parser.add_argument("--source", choices=SOURCE_VALUES)
+    parser.add_argument(
+        "--strict-coverage",
+        action="store_true",
+        help="refuse a run where a condition value is missing from any requested split",
+    )
     parser.add_argument("--json-out", default="dist/milestone_54i5_vivo_benchmark.json")
     parser.add_argument("--freeze-manifest", help="required for holdout_screen; pins model SHA-256")
     parser.add_argument(
@@ -1114,6 +1135,12 @@ def main() -> int:
             Path(args.holdout_use_log),
         )
         coverage, coverage_warnings = coverage_report(selected, splits)
+        if args.strict_coverage:
+            strict_errors = strict_coverage_errors(selected, splits)
+            if strict_errors:
+                raise FatalError(
+                    "--strict-coverage failed:\n" + "\n".join(strict_errors[:10])
+                )
         results = run_models(selected, splits, model_paths, max(1, args.chunk_size))
     except FatalError as error:
         print(f"FATAL {error}")
