@@ -40,6 +40,15 @@ class ManifestBuilderTests(unittest.TestCase):
         bad_castling = START_FEN.replace("KQkq", "KKQQ")
         self.assertTrue(any("castling" in error for error in manifest.validate_fen(bad_castling)))
 
+    def test_source_warnings_flag_unknown_and_mixed_sources(self):
+        self.assertEqual(
+            manifest.source_warnings([{"source": "native-dump"}, {"source": "native-dump"}]), []
+        )
+        warnings = manifest.source_warnings([{"source": "native-dump"}, {"source": "screencap"}])
+        self.assertTrue(any("mixes sources" in warning for warning in warnings))
+        warnings = manifest.source_warnings([{"source": "screenshot"}])
+        self.assertTrue(any("unknown capture source" in warning for warning in warnings))
+
     def test_corner_validation_requires_flat_ordered_quad(self):
         flat = [0.1, 0.1, 0.9, 0.1, 0.9, 0.9, 0.1, 0.9]
         corners, errors = manifest.validate_corners(flat)

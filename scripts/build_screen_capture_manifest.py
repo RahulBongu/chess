@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 SPLITS = {"train_screen", "val_screen", "holdout_screen"}
+SOURCE_VALUES = {"native-dump", "screencap"}
 MIN_BURST_FRAMES = 10
 # Frame corners must stay inside the sensor. A little float tolerance only.
 CORNER_EPSILON = 1e-6
@@ -178,6 +179,20 @@ def validate_corners(raw: object) -> tuple[list[float] | None, list[str]]:
     return (values if not errors else None), errors
 
 
+def source_warnings(records: list[dict]) -> list[str]:
+    sources = sorted({record.get("source") for record in records})
+    unknown = sorted(set(sources) - SOURCE_VALUES)
+    warnings: list[str] = []
+    if unknown:
+        warnings.append(f"unknown capture source(s) {unknown}; allowed {sorted(SOURCE_VALUES)}")
+    if len(sources) > 1:
+        warnings.append(
+            f"manifest mixes sources {sources}; evaluate one source at a time "
+            "with --source (they are not numerically comparable)"
+        )
+    return warnings
+
+
 def load_sessions(root: Path) -> dict[str, str]:
     sessions_path = root / "sessions.json"
     if not sessions_path.exists():
@@ -265,8 +280,10 @@ def build(capture_root: Path, out_dir: Path) -> tuple[int, dict]:
                     issue.errors.append(f"missing required field {required!r}")
 
             source = sidecar.get("source")
-            if source is not None and source not in ("native-dump", "screencap"):
-                issue.errors.append(f"source must be 'native-dump' or 'screencap', got {source!r}")
+            if source is not None and source not in SOURCE_VALUES:
+                issue.errors.append(
+                    f"source must be one of {sorted(SOURCE_VALUES)}, got {source!r}"
+                )
             apk_sha = sidecar.get("apk_sha256")
             if apk_sha is not None and not re.fullmatch(r"[0-9a-f]{64}", str(apk_sha)):
                 issue.errors.append("apk_sha256 must be 64 lowercase hex characters")
@@ -324,6 +341,7 @@ def build(capture_root: Path, out_dir: Path) -> tuple[int, dict]:
 
     # A session directory maps to exactly one split in sessions.json, so a
     # frame can never inherit a split from a different session.
+    warnings.extend(source_warnings(records))
     for split in sorted(SPLITS):
         if not any(record["split"] == split for record in records):
             warnings.append(f"split {split} has no valid frames")
