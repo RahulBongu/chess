@@ -8,6 +8,7 @@ accuracy claims for the physical board.
 
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -338,6 +339,40 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(reporter.promotion_verdict(holdout)["keep_production"], "universal150_prod")
         holdout["results"]["holdout_screen"]["models"]["candidate"] = metrics(0.9, 0.7, 0.95)
         self.assertEqual(reporter.promotion_verdict(holdout).get("promote"), "candidate")
+
+
+    def test_decision_json_cli_writes_machine_readable_verdict(self):
+        temp = Path(tempfile.mkdtemp(prefix="i5tool_decision_"))
+        try:
+            source = temp / "report.json"
+            source.write_text(
+                json.dumps(
+                    {
+                        "manifest": "m.jsonl",
+                        "manifest_sha256": "a" * 64,
+                        "source": "native-dump",
+                        "splits": ["val_screen"],
+                        "models": {"universal150_prod": {}},
+                        "results": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            decision = temp / "decision.json"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/report_screen_benchmark_i5.py"),
+                 "--json", str(source), "--decision-json", str(decision), "--out", str(temp / "report.md")],
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+            payload = json.loads(decision.read_text(encoding="utf-8"))
+            self.assertEqual(payload["milestone"], "5.4I.5")
+            self.assertEqual(payload["verdict"]["keep_production"], "universal150_prod")
+            self.assertTrue((temp / "report.md").exists())
+        finally:
+            shutil.rmtree(temp, ignore_errors=True)
 
 
 class ContractTests(unittest.TestCase):

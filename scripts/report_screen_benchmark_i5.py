@@ -106,6 +106,21 @@ def promotion_verdict(report: dict) -> dict:
     }
 
 
+def decision_payload(report: dict) -> dict:
+    """Machine-readable version of the promotion decision and its inputs."""
+    verdict = promotion_verdict(report)
+    return {
+        "milestone": "5.4I.5",
+        "generated_at": report.get("generated_at"),
+        "manifest": report.get("manifest"),
+        "manifest_sha256": report.get("manifest_sha256"),
+        "source": report.get("source"),
+        "splits": report.get("splits", []),
+        "models": report.get("models", {}),
+        "verdict": verdict,
+    }
+
+
 def render(report: dict) -> str:
     verdict = promotion_verdict(report)
     lines = [
@@ -227,6 +242,7 @@ def main() -> int:
     parser.add_argument("--selftest", action="store_true")
     parser.add_argument("--json", help="evaluator JSON to summarize")
     parser.add_argument("--out", help="write Markdown here instead of stdout")
+    parser.add_argument("--decision-json", help="write the machine-readable promotion decision here")
     args = parser.parse_args()
     if args.selftest:
         return selftest()
@@ -234,6 +250,11 @@ def main() -> int:
         parser.error("--json is required unless --selftest is used")
     report = json.loads(Path(args.json).read_text(encoding="utf-8"))
     text = render(report)
+    if args.decision_json:
+        path = Path(args.decision_json)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(decision_payload(report), indent=2), encoding="utf-8")
+        print(f"wrote decision {path}")
     if args.out:
         path = Path(args.out)
         path.parent.mkdir(parents=True, exist_ok=True)
