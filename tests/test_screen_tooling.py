@@ -23,6 +23,7 @@ import build_screen_capture_manifest as manifest  # noqa: E402
 import evaluate_screen_capture_benchmark as evaluator  # noqa: E402
 import preflight_vivo_capture as preflight  # noqa: E402
 import report_screen_benchmark_i5 as reporter  # noqa: E402
+import check_screen_accuracy_regression as accuracy_guard  # noqa: E402
 import verify_screen_benchmark_contract as contract  # noqa: E402
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
@@ -373,6 +374,26 @@ class ReportTests(unittest.TestCase):
             self.assertTrue((temp / "report.md").exists())
         finally:
             shutil.rmtree(temp, ignore_errors=True)
+
+
+class AccuracyGuardTests(unittest.TestCase):
+    def test_audited_baseline_is_pinned_and_tampering_is_detected(self):
+        baseline = {
+            "asset_equals_universal150": True,
+            "results": {
+                "universal150_prod": {
+                    board: dict(values, board_exact=False)
+                    for board, values in accuracy_guard.EXPECTED.items()
+                }
+            },
+        }
+        self.assertEqual(accuracy_guard.check_report(baseline), [])
+        tampered = json.loads(json.dumps(baseline))
+        tampered["results"]["universal150_prod"]["green_start_device"]["uncertain"] = 0
+        self.assertTrue(any("uncertain changed" in failure for failure in accuracy_guard.check_report(tampered)))
+        tampered = json.loads(json.dumps(baseline))
+        tampered["asset_equals_universal150"] = False
+        self.assertTrue(any("asset_equals" in failure for failure in accuracy_guard.check_report(tampered)))
 
 
 class ContractTests(unittest.TestCase):
