@@ -118,6 +118,8 @@ def validate_fen(fen: str) -> list[str]:
         errors.append(f"pawns on back rank: {', '.join(pawns_on_back)}")
     if turn not in ("w", "b"):
         errors.append(f"invalid side to move {turn!r}")
+    if castling != "-" and not re.fullmatch(r"K?Q?k?q?", castling):
+        errors.append(f"invalid castling rights {castling!r}")
     if ep != "-":
         if len(ep) != 2 or ep[0] not in "abcdefgh" or ep[1] not in "36":
             errors.append(f"invalid en-passant target {ep!r}")

@@ -35,6 +35,8 @@ class ManifestBuilderTests(unittest.TestCase):
             "RNBQKBNR", "PNBRQKNP"
         )
         self.assertTrue(any("back rank" in error for error in manifest.validate_fen(pawns_back)))
+        bad_castling = START_FEN.replace("KQkq", "KKQQ")
+        self.assertTrue(any("castling" in error for error in manifest.validate_fen(bad_castling)))
 
     def test_corner_validation_requires_flat_ordered_quad(self):
         flat = [0.1, 0.1, 0.9, 0.1, 0.9, 0.9, 0.1, 0.9]
@@ -139,6 +141,26 @@ class EvaluatorTests(unittest.TestCase):
         self.assertFalse(evaluator.burst_gate([weak, weak.copy()], "white_bottom")["ok"])
         with self.assertRaises(evaluator.FatalError):
             evaluator.burst_probabilities([])
+
+    def test_manifest_sessions_are_cross_checked(self):
+        temp = Path(tempfile.mkdtemp(prefix="i5tool_sessions_"))
+        try:
+            (temp / "sessions.json").write_text(
+                json.dumps({"s01": "train_screen"}), encoding="utf-8"
+            )
+            records = [{"session_id": "s01", "split": "train_screen"}]
+            self.assertEqual(evaluator.validate_manifest_sessions(records, temp), [])
+            errors = evaluator.validate_manifest_sessions(
+                [{"session_id": "s01", "split": "val_screen"}], temp
+            )
+            self.assertTrue(any("sessions.json" in error for error in errors))
+            errors = evaluator.validate_manifest_sessions(
+                [{"session_id": "s99", "split": "train_screen"}], temp
+            )
+            self.assertTrue(any("not declared" in error for error in errors))
+            self.assertTrue(evaluator.validate_manifest_sessions(records, temp / "missing"))
+        finally:
+            shutil.rmtree(temp, ignore_errors=True)
 
     def test_calibration_source_and_holdout_guards(self):
         self.assertEqual(evaluator.expected_calibration_error([(1.0, True)] * 50)["ece"], 0.0)

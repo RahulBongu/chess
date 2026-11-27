@@ -519,6 +519,30 @@ def cell_key(record: dict) -> tuple[str, ...]:
 # Manifest, source selection, holdout guard
 # ---------------------------------------------------------------------------
 
+def validate_manifest_sessions(records: list[dict], capture_root: Path) -> list[str]:
+    """Cross-check manifest splits against the capture root's sessions.json."""
+    sessions_path = capture_root / "sessions.json"
+    if not sessions_path.is_file():
+        return [f"missing {sessions_path}; cannot verify session splits"]
+    try:
+        sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as error:
+        return [f"invalid {sessions_path}: {error}"]
+    if not isinstance(sessions, dict):
+        return [f"{sessions_path} must map session_id -> split"]
+    errors: list[str] = []
+    for record in records:
+        session = str(record.get("session_id"))
+        expected = sessions.get(session)
+        if expected is None:
+            errors.append(f"session {session!r} is not declared in sessions.json")
+        elif record.get("split") != expected:
+            errors.append(
+                f"session {session!r} split {record.get('split')!r} != sessions.json {expected!r}"
+            )
+    return errors
+
+
 def load_manifest(manifest_path: Path, capture_root: Path) -> list[dict]:
     if not manifest_path.is_file():
         raise FatalError(f"manifest not found: {manifest_path}")
@@ -573,6 +597,7 @@ def load_manifest(manifest_path: Path, capture_root: Path) -> list[dict]:
             continue
         record["_path"] = frame_path
         records.append(record)
+    errors.extend(validate_manifest_sessions(records, root))
     if errors:
         preview = "\n".join(errors[:10])
         raise FatalError(f"manifest rejected ({len(errors)} problems):\n{preview}")
