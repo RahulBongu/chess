@@ -31,6 +31,7 @@ EVALUATOR = ROOT / "scripts/evaluate_screen_capture_benchmark.py"
 MANIFEST_BUILDER = ROOT / "scripts/build_screen_capture_manifest.py"
 PREFLIGHT = ROOT / "scripts/preflight_vivo_capture.py"
 REPORTER = ROOT / "scripts/report_screen_benchmark_i5.py"
+ACCURACY_GUARD = ROOT / "scripts/check_screen_accuracy_regression.py"
 CAMERA_VIEW = ROOT / "modules/live-camera/android/src/main/java/expo/modules/livecamera/LiveCameraView.kt"
 
 EXPECTED_CLASSES = [
@@ -232,6 +233,7 @@ def check_tooling_contract() -> None:
         "manifest builder": MANIFEST_BUILDER,
         "preflight": PREFLIGHT,
         "reporter": REPORTER,
+        "accuracy guard": ACCURACY_GUARD,
     }
     texts: dict[str, str] = {}
     for name, path in tools.items():
@@ -250,11 +252,16 @@ def check_tooling_contract() -> None:
         ('SOURCE_VALUES = ("native-dump", "screencap")', "evaluator source values pinned"),
         ('"holdout_screen" not in splits', "evaluator holdout guard present"),
         ('def burst_gate(', "evaluator exposes burst-averaged start gate"),
+        ('"--strict-coverage"', "evaluator strict coverage guard present"),
     ):
         check(snippet in evaluator_text, label)
 
     builder_text = texts.get("manifest builder", "")
     check("MIN_BURST_FRAMES = 10" in builder_text, "manifest builder burst target pinned at 10")
+    check(
+        'SOURCE_VALUES = {"native-dump", "screencap"}' in builder_text,
+        "manifest builder source values pinned",
+    )
     check(
         "corners_norm must be a flat list of 8 numbers" in builder_text,
         "manifest builder enforces the flat corner schema",
@@ -269,6 +276,7 @@ def check_tooling_contract() -> None:
             'PRODUCTION_MODEL_SHA256 = "4a78b7ad6145f2849f6d7ef18be6c1c4b124f909f984131f860820f90ddfffab"',
             "preflight production model hash pinned",
         ),
+        ('"dump-target"', "preflight checks capture dump target writability"),
     ):
         check(snippet in preflight_text, label)
 
@@ -280,6 +288,11 @@ def check_tooling_contract() -> None:
     reporter_text = texts.get("reporter", "")
     check('PRODUCTION = "universal150_prod"' in reporter_text, "reporter production model pinned")
     check("def promotion_verdict(" in reporter_text, "reporter promotion rule present")
+    check('"--decision-json"' in reporter_text, "reporter machine-readable decision present")
+
+    guard_text = texts.get("accuracy guard", "")
+    check('"brown_start_device"' in guard_text, "accuracy guard pins brown baseline")
+    check('"green_start_device"' in guard_text, "accuracy guard pins green baseline")
 
     for name, path in tools.items():
         if not path.exists():
@@ -299,7 +312,7 @@ def check_tooling_contract() -> None:
 def main() -> int:
     missing_required = [
         str(path)
-        for path in (ASSET, PRODUCTION, KOTLIN, TRAIN, MANIFEST, EVALUATOR, MANIFEST_BUILDER, PREFLIGHT, REPORTER, CAMERA_VIEW)
+        for path in (ASSET, PRODUCTION, KOTLIN, TRAIN, MANIFEST, EVALUATOR, MANIFEST_BUILDER, PREFLIGHT, REPORTER, ACCURACY_GUARD, CAMERA_VIEW)
         if not path.exists()
     ]
     if missing_required:
