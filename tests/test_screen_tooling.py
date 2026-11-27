@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Unit tests for the Milestone 5.4I.5 screen tooling.
+
+These are synthetic software tests. They validate manifest, evaluator and
+preflight logic only; they are not vivo capture evidence and never produce
+accuracy claims for the physical board.
+"""
+
+import json
+import shutil
+import sys
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import benchmark_screen_i5 as benchmark  # noqa: E402
+import build_screen_capture_manifest as manifest  # noqa: E402
+import evaluate_screen_capture_benchmark as evaluator  # noqa: E402
+import preflight_vivo_capture as preflight  # noqa: E402
+
+START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
+
+class ManifestBuilderTests(unittest.TestCase):
+    def test_fen_validation_checks_fields_and_illegal_layout(self):
+        self.assertEqual(manifest.validate_fen(START_FEN), [])
+        self.assertTrue(any("6 fields" in error for error in manifest.validate_fen(" ".join(START_FEN.split()[:5]))))
+        no_kings = "8/8/8/8/8/8/8/8 w - - 0 1"
+        self.assertTrue(any("king" in error for error in manifest.validate_fen(no_kings)))
+        pawns_back = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".replace(
+            "RNBQKBNR", "PNBRQKNP"
+        )
+        self.assertTrue(any("back rank" in error for error in manifest.validate_fen(pawns_back)))
+
+    def test_corner_validation_requires_flat_ordered_quad(self):
+        flat = [0.1, 0.1, 0.9, 0.1, 0.9, 0.9, 0.1, 0.9]
+        corners, errors = manifest.validate_corners(flat)
+        self.assertEqual(errors, [])
+        self.assertEqual(corners, flat)
+        _, errors = manifest.validate_corners([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]])
+        self.assertTrue(any("flat list" in error for error in errors))
+        _, errors = manifest.validate_corners([0.9, 0.9, 0.1, 0.1, 0.9, 0.1, 0.1, 0.9])
+        self.assertTrue(any("ordered" in error for error in errors))
+
+    def test_build_keeps_sessions_in_their_declared_split(self):
+        temp = Path(tempfile.mkdtemp(prefix="i5tool_manifest_"))
+        try:
+            sessions = {"s01": "train_screen", "s05": "val_screen"}
+            (temp / "sessions.json").write_text(json.dumps(sessions), encoding="utf-8")
+            for session, split in sessions.items():
+                folder = temp / session
+                folder.mkdir()
+                frame = folder / "f000.png"
+                manifest.write_png(frame, 8, 8, shade=32 if session == "s01" else 64)
+                sidecar = {
+                    "frame": frame.name,
+                    "frame_size": [8, 8],
+                    "session_id": session,
+                    "split": split,
+                    "position_id": "start",
+                    "fen": START_FEN,
+                    "corners_norm": [0.1, 0.1, 0.9, 0.1, 0.9, 0.9, 0.1, 0.9],
+                    "orientation": "white_bottom",
+                    "theme": "brown",
+                    "brightness_pct": 70,
+                    "distance": "nominal",
+                    "angle_deg": 0,
+                    "source": "native-dump",
+                    "device": "synthetic",
+                    "apk_sha256": "0" * 64,
+                    "captured_at": "2026-11-08T10:00:00+05:30",
+                }
+                frame.with_suffix(".json").write_text(json.dumps(sidecar), encoding="utf-8")
+            issues, summary = manifest.build(temp, temp / "out")
+            self.assertEqual(issues, 0)
+            self.assertEqual(summary["frames"], 2)
+            lines = [json.loads(line) for line in (temp / "out" / "manifest.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual({record["session_id"]: record["split"] for record in lines}, sessions)
+            self.assertTrue(all(record["relpath"].startswith(record["session_id"]) for record in lines))
+        finally:
+            shutil.rmtree(temp, ignore_errors=True)
+
+
+class EvaluatorTests(unittest.TestCase):
+    def test_truth_orientation_and_metrics(self):
+        white_grid = evaluator.parse_fen_to_classes(START_FEN)
+        self.assertEqual(white_grid[0], "black_rook")
+        self.assertEqual(evaluator.algebraic_square(7, 4, "white_bottom"), "e1")
+        self.assertEqual(evaluator.algebraic_square(7, 7, "black_bottom"), "a8")
+        black_grid = evaluator.orient_truth(white_grid, "black_bottom")
+        self.assertEqual(black_grid[0], "white_rook")
+        probs = evaluator.perfect_start_probs()
+        metrics = evaluator.square_metrics(probs, white_grid)
+        self.assertEqual(metrics["correct"], 64)
+        self.assertTrue(metrics["board_exact"])
+        self.assertEqual(metrics["colour_correct"], 32)
+        one_wrong = probs.copy()
+        one_wrong[60] = 0.01 / 12.0
+        one_wrong[60][evaluator.CLASS_TO_INDEX["white_pawn"]] = 0.99
+        metrics = evaluator.square_metrics(one_wrong, white_grid)
+        self.assertEqual(metrics["correct"], 63)
+        self.assertFalse(metrics["board_exact"])
+
+    def test_start_gate_prior_and_confident_contradiction(self):
+        probs = evaluator.perfect_start_probs()
+        gate = evaluator.start_gate(probs, "white_bottom")
+        self.assertTrue(gate["ok"])
+        self.assertEqual((gate["white_home"], gate["black_home"], gate["total_occupied"]), (16, 16, 32))
+        weak = probs.copy()
+        for index in (56, 57, 58, 59):
+            weak[index] = 0.01 / 12.0
+            weak[index][evaluator.CLASS_TO_INDEX["black_pawn"]] = 0.60
+            weak[index][evaluator.CLASS_TO_INDEX["empty"]] = 0.40
+        gate = evaluator.start_gate(weak, "white_bottom")
+        self.assertEqual(gate["uncertain"], 4)
+        self.assertFalse(gate["ok"])
+        inverted = probs.copy()
+        inverted[56] = 0.01 / 12.0
+        inverted[56][evaluator.CLASS_TO_INDEX["black_pawn"]] = 0.95
+        gate = evaluator.start_gate(inverted, "white_bottom")
+        self.assertFalse(gate["ok"])
+        self.assertEqual(gate["confident_contradictions"], ["a1"])
+
+    def test_calibration_source_and_holdout_guards(self):
+        self.assertEqual(evaluator.expected_calibration_error([(1.0, True)] * 50)["ece"], 0.0)
+        self.assertAlmostEqual(evaluator.expected_calibration_error([(1.0, False)] * 50)["ece"], 1.0)
+        with self.assertRaises(evaluator.FatalError):
+            evaluator.select_records(
+                [{"source": "native-dump"}, {"source": "screencap"}], None
+            )
+        temp = Path(tempfile.mkdtemp(prefix="i5tool_eval_"))
+        try:
+            model = temp / "m.onnx"
+            model.write_bytes(b"model")
+            hashes = {"universal150_prod": evaluator.sha256_file(model)}
+            freeze = temp / "freeze.json"
+            use_log = temp / "used.json"
+            with self.assertRaises(evaluator.FatalError):
+                evaluator.check_holdout_guard(["holdout_screen"], hashes, None, use_log)
+            freeze.write_text(json.dumps({"models": hashes}), encoding="utf-8")
+            self.assertIsNotNone(evaluator.check_holdout_guard(["holdout_screen"], hashes, freeze, use_log))
+            evaluator.record_holdout_use(use_log, {"models": hashes})
+            with self.assertRaises(evaluator.FatalError):
+                evaluator.check_holdout_guard(["holdout_screen"], hashes, freeze, use_log)
+        finally:
+            shutil.rmtree(temp, ignore_errors=True)
+
+
+class PreflightTests(unittest.TestCase):
+    def test_device_and_package_parsing(self):
+        devices = preflight.parse_devices(
+            "List of devices attached\ndevice-1\tdevice product:vivo\nother\toffline\n\n"
+        )
+        self.assertEqual([device["serial"] for device in devices], ["device-1", "other"])
+        self.assertEqual(
+            preflight.parse_package_path("package:/data/app/base.apk\npackage:/data/app/split.apk\n"),
+            "/data/app/base.apk",
+        )
+
+    def test_preflight_blocks_wrong_device_and_hash(self):
+        temp = Path(tempfile.mkdtemp(prefix="i5tool_preflight_"))
+        try:
+            model_bytes = b"model"
+            model = temp / "model.onnx"
+            model.write_bytes(model_bytes)
+            apk = temp / "app.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr(preflight.APK_ASSET_MODEL, model_bytes)
+            apk_bytes = apk.read_bytes()
+            apk_hash = preflight.sha256_bytes(apk_bytes)
+            model_hash = preflight.sha256_bytes(model_bytes)
+            root = temp / "capture"
+            preflight.ensure_capture_root(root)
+
+            def runner(args, timeout=60):
+                if args == ["devices", "-l"]:
+                    return 0, b"List of devices attached\ndevice-1\tdevice product:vivo\n\n", b""
+                if args[-1] == "ro.product.model":
+                    return 0, b"VivoTest\n", b""
+                if "pm" in args and "path" in args:
+                    return 0, b"package:/data/app/base.apk\n", b""
+                if "sha256sum" in args:
+                    return 0, (apk_hash + "  /data/app/base.apk\n").encode(), b""
+                return 1, b"", b"unexpected"
+
+            def run(**overrides):
+                options = dict(
+                    serial="device-1",
+                    package=preflight.PACKAGE,
+                    apk=apk,
+                    asset_model=model,
+                    capture_root=root,
+                    expect_apk_sha256=apk_hash,
+                    expect_model_sha256=model_hash,
+                    run_adb=runner,
+                    adb_available=True,
+                )
+                options.update(overrides)
+                return preflight.evaluate_preflight(**options)
+
+            self.assertTrue(run()["ok"])
+            empty = lambda args, timeout=60: (0, b"List of devices attached\n\n", b"")
+            self.assertFalse(run(run_adb=empty)["ok"])
+            bad_hash = lambda args, timeout=60: (
+                (0, ("0" * 64 + "  /data/app/base.apk\n").encode(), b"")
+                if "sha256sum" in args else runner(args)
+            )
+            report = run(run_adb=bad_hash)
+            self.assertFalse(report["ok"])
+            self.assertTrue(any(check["name"] == "installed-matches-local" for check in report["blockers"]))
+        finally:
+            shutil.rmtree(temp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()
