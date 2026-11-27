@@ -273,6 +273,17 @@ class PreflightTests(unittest.TestCase):
             report = run(run_adb=bad_hash)
             self.assertFalse(report["ok"])
             self.assertTrue(any(check["name"] == "installed-matches-local" for check in report["blockers"]))
+
+            partial_root = temp / "partial_capture"
+            partial_root.mkdir()
+            (partial_root / "sessions.json").write_text(
+                json.dumps({"s01": "train_screen", "s05": "val_screen"}), encoding="utf-8"
+            )
+            (partial_root / "s01").mkdir()
+            (partial_root / "s05").mkdir()
+            report = run(capture_root=partial_root)
+            self.assertFalse(report["ok"])
+            self.assertTrue(any(check["name"] == "split-coverage" for check in report["blockers"]))
         finally:
             shutil.rmtree(temp, ignore_errors=True)
 

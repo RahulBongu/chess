@@ -285,6 +285,15 @@ def evaluate_preflight(
             invalid = {name: split for name, split in sessions.items() if split not in SPLITS}
             if invalid:
                 raise ValueError(f"invalid splits: {invalid}")
+            missing_splits = sorted(SPLITS - set(sessions.values()))
+            if missing_splits:
+                add(
+                    "split-coverage",
+                    "block",
+                    f"sessions.json has no session for {missing_splits}; the protocol needs all three splits",
+                )
+            else:
+                add("split-coverage", "ok", "train/val/holdout sessions all declared")
             missing_dirs = [name for name in sessions if not (capture_root / name).is_dir()]
             if missing_dirs:
                 add("session-dirs", "block", f"missing session directories: {missing_dirs}")
